@@ -656,6 +656,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		if (get_response == 1) return false;
 		else return true;
 	}
+	LOG_DEBUG( "[%p]: <---- : read %s", rtspcld, line);
 
 	token = strtok(line, delimiters);
 	token = strtok(NULL, delimiters);
