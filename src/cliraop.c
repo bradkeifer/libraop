@@ -472,6 +472,8 @@ int main(int argc, char *argv[])
 	}
 	memcpy(&player.addr.s_addr, player.hostent->h_addr_list[0], player.hostent->h_length);
 
+	LOG_DEBUG("am=%s", am);
+	
 	if (am && strcasestr(am, "appletv") && pk && *pk && !secret)
 	{
 		LOG_ERROR("AppleTV requires authentication (need to send secret field)");
