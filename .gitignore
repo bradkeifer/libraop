@@ -69,3 +69,6 @@ __history
 lib/
 *.pdb
 *.bat
+
+# Visual Studio Code
+.vscode/
