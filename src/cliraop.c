@@ -501,6 +501,7 @@ int main(int argc, char *argv[])
 	// if UniFi PowerAmp, force auth
 	else if (am && strcasestr(am, "upl-amp"))
 	{
+		LOG_DEBUG("Forcing auth for device model %s", am);
 		auth = true;
 	}
 
