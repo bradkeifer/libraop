@@ -473,7 +473,7 @@ int main(int argc, char *argv[])
 	memcpy(&player.addr.s_addr, player.hostent->h_addr_list[0], player.hostent->h_length);
 
 	LOG_DEBUG("am=%s", am);
-	
+
 	if (am && strcasestr(am, "appletv") && pk && *pk && !secret)
 	{
 		LOG_ERROR("AppleTV requires authentication (need to send secret field)");
@@ -495,6 +495,11 @@ int main(int argc, char *argv[])
 
 	// if airport express, force auth
 	if (am && strcasestr(am, "airport"))
+	{
+		auth = true;
+	}
+	// if UniFi PowerAmp, force auth
+	else if (am && strcasestr(am, "upl-amp"))
 	{
 		auth = true;
 	}
