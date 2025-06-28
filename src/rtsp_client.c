@@ -646,7 +646,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	rval = send(rtspcld->fd, req, len, 0);
-	LOG_DEBUG( "[%p]: ----> : get_response %d, write %s", rtspcld, get_response,  req );
+	LOG_DEBUG( "[%p]: ----> : write %s", rtspcld, req);
 	free(req);
 
 	if (rval != len) {
@@ -654,6 +654,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	if (!get_response) return true;
+
+	LOG_DEBUG("[%p]: about to call http_read_line()", rtspcld);
 
 	if (http_read_line(rtspcld->fd, line, sizeof(line), timeout, true) <= 0) {
 		LOG_ERROR("[%p]: response : %s request failed", rtspcld, line);
