@@ -645,8 +645,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		req[len] = '\0';
 	}
 
+	LOG_DEBUG("[%p]: ----> : content %s", content);
 	rval = send(rtspcld->fd, req, len, 0);
-	LOG_DEBUG( "[%p]: ----> : write %s", rtspcld, req);
+	LOG_DEBUG("[%p]: ----> : write %s, length %d", rtspcld, req, len);
 	free(req);
 
 	if (rval != len) {
