@@ -234,7 +234,7 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 		kd_free(kd);
 	}
 
-	ELOG_DEBUG("[%p]: About to call exec_request with sdp %s", p, sdp);
+	LOG_DEBUG("[%p]: About to call exec_request with sdp %s", p, sdp);
 	// I think bug is here, with 0 length specified
 	return exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 1, NULL, NULL, NULL, NULL, NULL);
 }
