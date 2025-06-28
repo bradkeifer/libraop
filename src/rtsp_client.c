@@ -599,6 +599,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	if (content_type && content) {
+		// This masks a bug when incorrect length value is passed
 		sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length ? length : (int) strlen(content));
 		strcat(req, buf);
 	}
@@ -641,7 +642,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 			rtspcld->digest.nonce, url ? url : rtspcld->url, digest);
 	}
 
-	strcat(req,"\r\n");
+	// Adds an unecessary \r\n to data sent
+	// strcat(req,"\r\n");
 	len = strlen(req);
 
 	if (content_type && content) {
@@ -660,8 +662,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	if (!get_response) return true;
-
-	LOG_DEBUG("[%p]: about to call http_read_line()", rtspcld);
 
 	if (http_read_line(rtspcld->fd, line, sizeof(line), timeout, true) <= 0) {
 		LOG_ERROR("[%p]: response : %s request failed", rtspcld, line);
