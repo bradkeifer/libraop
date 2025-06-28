@@ -214,7 +214,7 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 		key_data_t kd[MAX_KD] = { 0 };
 
 		// execute an announce request and parse the output to get realm and nonce
-		exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 2, NULL, kd, NULL, NULL, NULL);
+		exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 2, NULL, kd, NULL, NULL, NULL);
 
 		if ((auth = kd_lookup(kd, "WWW-Authenticate")) != NULL) {
 			char * buf;
@@ -236,7 +236,7 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 
 	LOG_DEBUG("[%p]: About to call exec_request with sdp %s", p, sdp);
 	// I think bug is here, with 0 length specified
-	return exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 1, NULL, NULL, NULL, NULL, NULL);
+	return exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 1, NULL, NULL, NULL, NULL, NULL);
 }
 
 /*----------------------------------------------------------------------------*/
