@@ -498,12 +498,12 @@ int main(int argc, char *argv[])
 	{
 		auth = true;
 	}
-	// if UniFi PowerAmp, force auth
-	else if (am && strcasestr(am, "upl-amp"))
-	{
-		LOG_DEBUG("Forcing auth for device model %s", am);
-		auth = true;
-	}
+	// // if UniFi PowerAmp, force auth
+	// else if (am && strcasestr(am, "upl-amp"))
+	// {
+	// 	LOG_DEBUG("Forcing auth for device model %s", am);
+	// 	auth = true;
+	// }
 
 	// handle device password
 	char *password = NULL;
