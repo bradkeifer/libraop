@@ -572,7 +572,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	const char delimiters[] = " ";
 	char *token,*dp;
 	int i, rval, len, clen;
-	int timeout = 10000; // msec unit
+	int timeout = 20000; // msec unit
 	struct pollfd pfds;
 	key_data_t lkd[MAX_KD], *pkd;
 
