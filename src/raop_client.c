@@ -1003,6 +1003,9 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	LOG_INFO("[%p]: local interface %s", p, rtspcl_local_ip(p->rtspcl));
 
 	// RTSP pairing verify for AppleTV
+	if (*p->secret) {
+		LOG_DEBUG("About to call rtspcl_verify(). Not sure we should");
+	}
 	if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
 
 	// Send pubkey for MFi devices
