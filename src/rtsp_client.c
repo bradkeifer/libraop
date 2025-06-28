@@ -578,6 +578,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
 
+	LOG_DEBUG("[%p]: Content %s, length %d", rtspcld, content, length);				
+
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLOUT;
 
@@ -645,7 +647,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		req[len] = '\0';
 	}
 
-	LOG_DEBUG("[%p]: ----> : content %s", content);
+	LOG_DEBUG("[%p]: ----> : length %d, content %s", strlen(content), content);
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG("[%p]: ----> : write %s, length %d", rtspcld, req, len);
 	free(req);
