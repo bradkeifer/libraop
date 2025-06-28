@@ -619,19 +619,19 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	// add digest if we have a password
 	if (*rtspcld->digest.ha1) {
-		char* buf, digest[32+1];
-		asprintf(&buf, "%s:%s", cmd, url ? url : rtspcld->url);
+		char* buf1, digest[32+1];
+		asprintf(&buf1, "%s:%s", cmd, url ? url : rtspcld->url);
 		unsigned char ha2_bin[16], ha2[32+1];
-		MD5((uint8_t*) buf, strlen(buf), ha2_bin);
+		MD5((uint8_t*) buf1, strlen(buf1), ha2_bin);
 
-		free(buf); buf = (char*) ha2;
-		bytes2hex(ha2_bin, sizeof(ha2_bin), &buf);
-		asprintf(&buf, "%s:%s:%s", rtspcld->digest.ha1, rtspcld->digest.nonce, ha2);
+		free(buf1); buf1 = (char*) ha2;
+		bytes2hex(ha2_bin, sizeof(ha2_bin), &buf1);
+		asprintf(&buf1, "%s:%s:%s", rtspcld->digest.ha1, rtspcld->digest.nonce, ha2);
 		unsigned char digest_bin[16];
-		MD5((uint8_t*) buf, strlen(buf), digest_bin);
+		MD5((uint8_t*) buf1, strlen(buf1), digest_bin);
 
-		free(buf); buf = digest;
-		bytes2hex(digest_bin, sizeof(digest_bin), &buf);
+		free(buf1); buf1 = digest;
+		bytes2hex(digest_bin, sizeof(digest_bin), &buf1);
 
 		sprintf(req + strlen(req), "Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\"\r\n", 
 			!strcasecmp(rtspcld->digest.realm, "raop") ? "iTunes" : "AirPlay", rtspcld->digest.realm,
@@ -647,7 +647,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		req[len] = '\0';
 	}
 
-	LOG_DEBUG("[%p]: ----> : Sending %s", rtspcld, req);
+	// LOG_DEBUG("[%p]: ----> : Sending %s", rtspcld, req);
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG("[%p]: ----> : write %s, length %d", rtspcld, req, len);
 	free(req);
