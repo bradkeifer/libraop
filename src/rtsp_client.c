@@ -214,7 +214,8 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 		key_data_t kd[MAX_KD] = { 0 };
 
 		// execute an announce request and parse the output to get realm and nonce
-		exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 2, NULL, kd, NULL, NULL, NULL);
+		exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 2, NULL, kd, NULL, NULL, NULL);
+		// exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 2, NULL, kd, NULL, NULL, NULL);
 
 		if ((auth = kd_lookup(kd, "WWW-Authenticate")) != NULL) {
 			char * buf;
@@ -234,7 +235,8 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 		kd_free(kd);
 	}
 
-	return exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 1, NULL, NULL, NULL, NULL, NULL);
+	// return exec_request(p, "ANNOUNCE", "application/sdp", sdp, (int) strlen(sdp), 1, NULL, NULL, NULL, NULL, NULL);
+	return exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 1, NULL, NULL, NULL, NULL, NULL);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -253,6 +255,7 @@ bool rtspcl_setup(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) 
 	hds[1].key = NULL;
 
 	if (!exec_request(p, "SETUP", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, NULL)) return false;
+	// Memory leak if exec_request() fails
 	free(hds[0].data);
 
 	if ((temp = kd_lookup(rkd, "Session")) != NULL) {
@@ -572,7 +575,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	const char delimiters[] = " ";
 	char *token,*dp;
 	int i, rval, len, clen;
-	int timeout = 20000; // msec unit
+	int timeout = 10000; // msec unit
 	struct pollfd pfds;
 	key_data_t lkd[MAX_KD], *pkd;
 
