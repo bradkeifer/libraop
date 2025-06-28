@@ -101,6 +101,9 @@ bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr hos
 	p->session = NULL;
 	if ((p->fd = open_tcp_socket(local, NULL, true)) == -1) return false;
 	if (!tcp_connect_by_host(p->fd, host, destport)) return false;
+	// Testing change to see if UniFi AMP will work with UDP
+	// if ((p->fd = open_udp_socket(local, NULL, true)) == -1) return false;
+	// if (!udp_connect_by_host(p->fd, host, destport)) return false;
 
 	struct sockaddr_in name;
 	socklen_t namelen = sizeof(name);
