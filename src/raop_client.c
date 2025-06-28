@@ -1025,17 +1025,17 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 
 	// AppleTV expects now the timing port ot be opened BEFORE the setup message
 	// Is that only for an Apple TV??
-	p->rtp_ports.time.rport = 0;
+	// p->rtp_ports.time.rport = 0;
 
-	do {
-		p->rtp_ports.time.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
-		p->rtp_ports.time.fd = open_udp_socket(p->host_addr, &p->rtp_ports.time.lport, true);
-	} while (p->rtp_ports.time.fd < 0 && port.count < p->port_range);
+	// do {
+	// 	p->rtp_ports.time.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
+	// 	p->rtp_ports.time.fd = open_udp_socket(p->host_addr, &p->rtp_ports.time.lport, true);
+	// } while (p->rtp_ports.time.fd < 0 && port.count < p->port_range);
 
-	if (p->rtp_ports.time.fd < 0) goto erexit;
+	// if (p->rtp_ports.time.fd < 0) goto erexit;
 
-	p->time_running = true;
-	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
+	// p->time_running = true;
+	// pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
 
 	// RTSP ANNOUNCE
 	if (p->auth && p->crypto) {
