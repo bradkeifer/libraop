@@ -581,8 +581,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
 
-	// LOG_DEBUG("[%p]: Content %s, length %d", rtspcld, content, length);				
-
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLOUT;
 
@@ -644,14 +642,19 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	// Adds what appears to be an unecessary \r\n to data sent
 	// It results in a pair of \r\n at end of SETUP message, but not with ANNOUNCE message
-	// ANNOUNCE needs a \r\n before the SDP info - fix it there, not here.
+	// ANNOUNCE has content. SETUP does not. Let's try some logic change here.
 	// strcat(req,"\r\n");
-	len = strlen(req);
+	// len = strlen(req);
 
 	if (content_type && content) {
+		strcat(req,"\r\n");
+		len = strlen(req);
 		len += (length ? length : strlen(content));
 		memcpy(req + strlen(req), content, length ? length : strlen(content));
 		req[len] = '\0';
+	} 
+	else {
+		len = strlen(req);
 	}
 
 	// LOG_DEBUG("[%p]: ----> : Sending %s", rtspcld, req);
