@@ -21,7 +21,7 @@ EXECUTABLE = $(CORE)-$(PLATFORM)
 
 DEFINES  = -DNDEBUG -D_GNU_SOURCE
 CFLAGS  += -Wall -fPIC -ggdb -O2 $(DEFINES) -fdata-sections -ffunction-sections
-LDFLAGS += -lpthread -ldl -lm -llibplist-2.0 -L.
+LDFLAGS += -lpthread -ldl -lm -lplist-2.0 -L. -L /usr/lib
 
 TOOLS		= crosstools/src
 FETCHER		= http-fetcher
