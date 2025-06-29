@@ -1022,7 +1022,6 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	if (!raopcl_set_sdp(p, sdp)) goto erexit;
 
 	// AppleTV expects now the timing port ot be opened BEFORE the setup message
-	// BK: Is that only for an Apple TV??
 	p->rtp_ports.time.rport = 0;
 
 	do {
@@ -1043,7 +1042,7 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 		if (!rtspcl_announce_sdp(p->rtspcl, sdp, p->passwd))goto erexit;
 		if (!rtspcl_mark_del_exthds(p->rtspcl, "Apple-Challenge")) goto erexit;
 	} else if (!rtspcl_announce_sdp(p->rtspcl, sdp, p->passwd)) {
-		LOG_DEBUG("[%p]: RTSP ANNOUNCE unsuccessful", p);
+		LOG_ERROR("[%p]: RTSP ANNOUNCE unsuccessful", p);
 		goto erexit;
 	}
 
