@@ -308,13 +308,14 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 		return false;
 	}
 	setupRequestPlist = plist_new_dict();
-	if ((ret=plist_dict_set_item(setupRequestPlist, "clientNameString", clientName)) != PLIST_ERR_SUCCESS) {
-		LOG_ERROR("[%p]: plist_dict_set_item():Error %d adding clientNameString %s ", p, ret, clientName);
-		plist_free(setupRequestPlist);
-	}
+	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
-    plist_to_bin(setupRequestPlist, &content, &contentLength);
+    if ((ret=plist_to_bin(setupRequestPlist, &content, &contentLength)) != PLIST_ERR_SUCCESS) {
+		LOG_ERROR("[%p]: plist_to_bin():Error %d", p, ret);
+		plist_free(setupRequestPlist);
+		return false;
+	}
     plist_free(setupRequestPlist);
 	LOG_INFO("[%p]: Plist constructed of length %d", p, contentLength);
 
