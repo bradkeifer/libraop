@@ -12,7 +12,6 @@
 #include <string.h>
 #include <ctype.h>
 #include <openssl/rand.h>
-#include <plist/plist.h>
 
 #ifdef USE_CURVE25519
 #include "ed25519_signature.h"
@@ -29,6 +28,7 @@
 #include "cross_util.h"
 #include "cross_log.h"
 #include "rtsp_client.h"
+#include "plist/plist.h"
 
 #define PUBLIC_KEY_SIZE 32
 #define SECRET_KEY_SIZE 32
