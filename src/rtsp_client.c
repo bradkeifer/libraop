@@ -642,22 +642,16 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	// Adds what appears to be an unecessary \r\n to data sent
 	// It results in a pair of \r\n at end of SETUP message, but not with ANNOUNCE message
-	// ANNOUNCE has content. SETUP does not. Let's try some logic change here.
-	// strcat(req,"\r\n");
-	// len = strlen(req);
+	// ANNOUNCE has content. SETUP does not.
+	strcat(req,"\r\n");
+	len = strlen(req);
 
 	if (content_type && content) {
-		strcat(req,"\r\n");
-		len = strlen(req);
 		len += (length ? length : strlen(content));
 		memcpy(req + strlen(req), content, length ? length : strlen(content));
 		req[len] = '\0';
 	} 
-	else {
-		len = strlen(req);
-	}
 
-	// LOG_DEBUG("[%p]: ----> : Sending %s", rtspcld, req);
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG("[%p]: ----> : write %s, length %d", rtspcld, req, len);
 	free(req);
