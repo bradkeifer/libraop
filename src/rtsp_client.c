@@ -295,10 +295,10 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 
 	if (!p) return false;
 
-	LOG_INFO("[%p]: AirPlay 2 SETUP RTSP request under development", p);
+	port->audio.rport = 0;
 
 	/*
-	 * We want to create a plist with the following items:
+	 * We create a plist with the following items:
 	 * name: clientNameString - we will use the hostname
 	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
 	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
@@ -308,14 +308,15 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 		return false;
 	}
 	setupRequestPlist = plist_new_dict();
-	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
+	if ((ret=plist_dict_set_item(setupRequestPlist, "clientNameString", clientName)) != PLIST_ERR_SUCCESS) {
+		LOG_ERROR("[%p]: plist_dict_set_item():Error %d adding clientNameString %s ", p, ret, clientName);
+		plist_free(setupRequestPlist);
+	}
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
     plist_to_bin(setupRequestPlist, &content, &contentLength);
     plist_free(setupRequestPlist);
 	LOG_INFO("[%p]: Plist constructed of length %d", p, contentLength);
-
-	port->audio.rport = 0;
 
 	hds[0].key = "Transport";
 	(void)! asprintf(&hds[0].data, "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=%d;timing_port=%d",
@@ -326,7 +327,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", NULL, 0, 1, hds, rkd, NULL, NULL, NULL);
 	// ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
 	free(hds[0].data);
-	plist_free(content);
+	free(content);
 	if (!ret) return ret;
 
 	if ((temp = kd_lookup(rkd, "Session")) != NULL) {
@@ -634,7 +635,7 @@ bool rtspcl_teardown(struct rtspcl_s *p) {
 }
 
 /*
- * send RTSP request, and get responce if it's needed
+ * send RTSP request, and get response if it's needed
  * if this gets a success, *kd is allocated or reallocated (if *kd is not NULL)
  */
 static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
