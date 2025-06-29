@@ -41,7 +41,7 @@ INCLUDE = -I$(VALGRIND)/memcheck -I$(VALGRIND)/include \
 	  -I$(CODECS)/include/addons -I$(CODECS)/include/flac \
 	  -I$(CODECS)/include/shine -I$(CODECS)/include/faac \
 	  -I$(SRC) -I$(SRC)/inc \
-	  -I$(FETCHER)/include
+	  -I$(FETCHER)/include \
 	  -I/usr/include
 
 CURVE25519_SOURCES = curve25519_dh.c curve25519_mehdi.c curve25519_order.c curve25519_utils.c custom_blind.c\
