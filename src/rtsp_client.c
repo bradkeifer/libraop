@@ -591,6 +591,10 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	sprintf(req, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
 
+	// Align with Unofficial Airplay Specification
+	sprintf(buf,"CSeq: %d\r\n", ++rtspcld->cseq);
+	strcat(req, buf);
+
 	for (i = 0; hds && hds[i].key != NULL; i++) {
 		sprintf(buf, "%s: %s\r\n", hds[i].key, hds[i].data);
 		strcat(req, buf);
@@ -601,9 +605,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length ? length : (int) strlen(content));
 		strcat(req, buf);
 	}
-
-	sprintf(buf,"CSeq: %d\r\n", ++rtspcld->cseq);
-	strcat(req, buf);
 
 	sprintf(buf, "User-Agent: %s\r\n", rtspcld->useragent );
 	strcat(req, buf);
