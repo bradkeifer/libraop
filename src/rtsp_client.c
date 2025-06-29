@@ -239,8 +239,10 @@ bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 	// return exec_request(p, "ANNOUNCE", "application/sdp", sdp, 0, 1, NULL, NULL, NULL, NULL, NULL);
 }
 
-/*----------------------------------------------------------------------------*/
-bool rtspcl_setup(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) {
+/*----------------------------------------------------------------------------
+*	AirPlay 1 SETUP RTSP request
+*/
+bool rtspcl_setup_1(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) {
 	key_data_t hds[2];
 	char *temp;
 
@@ -254,8 +256,48 @@ bool rtspcl_setup(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) 
 	if (!hds[0].data) return false;
 	hds[1].key = NULL;
 
-	if (!exec_request(p, "SETUP", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, NULL)) return false;
-	// Memory leak if exec_request() fails
+	if (!exec_request(p, "SETUP", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, NULL)) {
+		free(hds[0].data);
+		return false;
+	}
+	free(hds[0].data);
+
+	if ((temp = kd_lookup(rkd, "Session")) != NULL) {
+		p->session = strdup(strtrim(temp));
+		LOG_DEBUG("[%p]: <------ : session:%s", p, p->session);
+		return true;
+	}
+	else {
+		kd_free(rkd);
+		LOG_ERROR("[%p]: no session in response", p);
+		return false;
+	}
+}
+
+/*----------------------------------------------------------------------------
+*	AirPlay 2 SETUP RTSP request
+*/
+bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) {
+	key_data_t hds[2];
+	char *temp;
+
+	if (!p) return false;
+
+	LOG_ERROR("[%p]: AirPlay 2 SETUP RTSP request not yet developed", p);
+	return false;
+
+	port->audio.rport = 0;
+
+	hds[0].key = "Transport";
+	(void)! asprintf(&hds[0].data, "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=%d;timing_port=%d",
+							(unsigned) port->ctrl.lport, (unsigned) port->time.lport);
+	if (!hds[0].data) return false;
+	hds[1].key = NULL;
+
+	if (!exec_request(p, "SETUP", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, NULL)) {
+		free(hds[0].data);
+		return false;
+	}
 	free(hds[0].data);
 
 	if ((temp = kd_lookup(rkd, "Session")) != NULL) {

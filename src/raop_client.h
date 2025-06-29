@@ -126,7 +126,8 @@ struct raopcl_s *raopcl_create(struct in_addr host, uint16_t port_base, uint16_t
 							   raop_codec_t codec, int frame_len, int latency_frames,
 							   raop_crypto_t crypto, bool auth, char *secret, char *passwd,
 							   char *et, char *md,
-							   int sample_rate, int sample_size, int channels, float volume);
+							   int sample_rate, int sample_size, int channels, float volume,
+							   int airplay_version);
 
 bool	raopcl_destroy(struct raopcl_s *p);
 bool	raopcl_connect(struct raopcl_s *p, struct in_addr host, uint16_t destport, bool set_volume);

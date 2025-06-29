@@ -123,6 +123,8 @@ static int print_usage(char *argv[])
 
 		   "\t[-if <ipaddress>] (IP of the interface to bind to)\n"
 
+		   "\t[-airplay_version <1|2>] (AirPlay version to use)\n"
+
 		   "\t[-debug <debug level>] (0 = silent)\n",
 		   name);
 	return -1;
@@ -321,7 +323,7 @@ int main(int argc, char *argv[])
 
 	int infile;
 	uint8_t *buf;
-	int i, n = -1, level = 3;
+	int i, n = -1, level = 3, airplay_version = 1;
 	raop_crypto_t crypto = RAOP_CLEAR;
 	uint64_t start = 0, start_at = 0, last = 0, frames = 0;
 	bool alac = false, encryption = false, auth = false;
@@ -425,6 +427,14 @@ int main(int argc, char *argv[])
 		{
 			passwd = argv[++i];
 		}
+		else if (!strcmp(argv[i], "-airplay_version"))
+		{
+			airplay_version = atoi(argv[++i]);
+			if (airplay_version < 1 || airplay_version > 2)
+			{
+				return print_usage(argv);
+			}
+		}
 		else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
 		{
 			return print_usage(argv);
@@ -526,7 +536,8 @@ int main(int argc, char *argv[])
 	if ((raopcl = raopcl_create(glHost, 0, 0, glDACPid, activeRemote, alac ? RAOP_ALAC : RAOP_ALAC_RAW, DEFAULT_FRAMES_PER_CHUNK,
 								latency, crypto, auth, secret, password, et, md,
 								44100, 16, 2,
-								volume > 0 ? raopcl_float_volume(volume) : -144.0)) == NULL)
+								volume > 0 ? raopcl_float_volume(volume) : -144.0),
+								airplay_version) == NULL)
 	{
 		LOG_ERROR("Cannot init RAOP %p", raopcl);
 		close_platform();

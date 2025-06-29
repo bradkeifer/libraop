@@ -173,6 +173,7 @@ typedef struct raopcl_s {
 	uint8_t md_caps;
 	uint16_t port_base, port_range;
 	char passwd[64];
+	int airplay_version;
 } raopcl_data_t;
 
 
@@ -663,7 +664,8 @@ struct raopcl_s *raopcl_create(struct in_addr host, uint16_t port_base, uint16_t
 							   raop_codec_t codec, int chunk_len, int latency_frames,
 							   raop_crypto_t crypto, bool auth, char *secret, char* passwd,
 							   char *et, char *md,
-							   int sample_rate, int sample_size, int channels, float volume)
+							   int sample_rate, int sample_size, int channels, float volume,
+							   int airplay_version)
 {
 	raopcl_data_t *raopcld;
 
@@ -695,6 +697,7 @@ struct raopcl_s *raopcl_create(struct in_addr host, uint16_t port_base, uint16_t
 	raopcld->host_addr = host;
 	raopcld->rtp_ports.ctrl.fd = raopcld->rtp_ports.time.fd = raopcld->rtp_ports.audio.fd = -1;
 	raopcld->seq_number = rand();
+	raopcld->airplay_version = airplay_version;
 
 	if (md && strchr(md, '0')) raopcld->md_caps |= MD_TEXT;
 	if (md && strchr(md, '1')) raopcld->md_caps |= MD_ARTWORK;
@@ -1034,19 +1037,14 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	p->time_running = true;
 	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
 
-	// RTSP ANNOUNCE
+	// RTSP ANNOUNCE: Same for AirPlay 1 and 2
 	if (p->auth && p->crypto) {
 		base64_encode(&seed.sac, 16, &sac);
 		strremovechar(sac, '=');
 		if (!rtspcl_add_exthds(p->rtspcl, "Apple-Challenge", sac)) goto erexit;
 		if (!rtspcl_announce_sdp(p->rtspcl, sdp, p->passwd))goto erexit;
 		if (!rtspcl_mark_del_exthds(p->rtspcl, "Apple-Challenge")) goto erexit;
-	} else if (!rtspcl_announce_sdp(p->rtspcl, sdp, p->passwd)) {
-		LOG_ERROR("[%p]: RTSP ANNOUNCE unsuccessful", p);
-		goto erexit;
-	}
-
-	LOG_DEBUG("[%p]: RTSP ANNOUNCE successful", p);
+	} else if (!rtspcl_announce_sdp(p->rtspcl, sdp, p->passwd)) goto erexit;
 
 	// open RTP sockets, need local ports here before sending SETUP
 	do {
@@ -1061,7 +1059,14 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	if (p->rtp_ports.ctrl.fd < 0 ||  p->rtp_ports.audio.fd < 0) goto erexit;
 
 	// RTSP SETUP : get all RTP destination ports
-	if (!rtspcl_setup(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	if (p->airplay_version == 1) {
+		if (!rtspcl_setup_1(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	} else if (p->airplay_version == 2) {
+		if (!rtspcl_setup_2(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	} else {
+		LOG_ERROR("[%p]: AirPlay version %d is not supported", p, p->airplay_version);
+		goto erexit;
+	}
 	if (!raopcl_analyse_setup(p, kd)) goto erexit;
 	kd_free(kd);
 
