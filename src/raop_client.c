@@ -1011,6 +1011,7 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	// build sdp parameter
 	buf = strdup(inet_ntoa(peer));
 	sprintf(sdp,
+			"\r\n"
 			"v=0\r\n"
 			"o=iTunes %s 0 IN IP4 %s\r\n"
 			"s=iTunes\r\n"

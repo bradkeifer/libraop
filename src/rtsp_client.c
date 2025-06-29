@@ -643,7 +643,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	// Adds what appears to be an unecessary \r\n to data sent
-	strcat(req,"\r\n");
+	// It results in a pair of \r\n at end of SETUP message, but not with ANNOUNCE message
+	// ANNOUNCE needs a \r\n before the SDP info - fix it there, not here.
+	// strcat(req,"\r\n");
 	len = strlen(req);
 
 	if (content_type && content) {
