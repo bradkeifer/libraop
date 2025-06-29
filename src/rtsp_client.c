@@ -295,7 +295,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 
 	if (!p) return false;
 
-	LOG_DEBUG("[%p]: AirPlay 2 SETUP RTSP request under development", p);
+	LOG_INFO("[%p]: AirPlay 2 SETUP RTSP request under development", p);
 
 	/*
 	 * We want to create a plist with the following items:
@@ -311,7 +311,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
-    plist_to_bin(setupRequestPlist, &content, &contentLength);	// Need to confirm where memory allocation/deallocation must happen for content - probably plist_free??
+    plist_to_bin(setupRequestPlist, &content, &contentLength);
     plist_free(setupRequestPlist);
 
 	port->audio.rport = 0;
@@ -666,7 +666,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	if (content_type && content) {
-		// This masks a bug when incorrect length value is passed
 		sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length ? length : (int) strlen(content));
 		strcat(req, buf);
 	}
@@ -709,9 +708,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 			rtspcld->digest.nonce, url ? url : rtspcld->url, digest);
 	}
 
-	// Adds what appears to be an unecessary \r\n to data sent
-	// It results in a pair of \r\n at end of SETUP message, but not with ANNOUNCE message
-	// ANNOUNCE has content. SETUP does not.
 	strcat(req,"\r\n");
 	len = strlen(req);
 
