@@ -12,6 +12,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <openssl/rand.h>
+#include <unistd.h>
+#include "plist/plist.h"
 
 #ifdef USE_CURVE25519
 #include "ed25519_signature.h"
@@ -28,7 +30,6 @@
 #include "cross_util.h"
 #include "cross_log.h"
 #include "rtsp_client.h"
-#include "plist/plist.h"
 
 #define PUBLIC_KEY_SIZE 32
 #define SECRET_KEY_SIZE 32
@@ -290,6 +291,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	char *content;
 	uint32_t contentLength;
 	bool ret;
+	char clientName[256];
 
 	if (!p) return false;
 
@@ -297,12 +299,16 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 
 	/*
 	 * We want to create a plist with the following items:
-	 * name: clientNameString - for the moment we will use "Airplay_2_Client"
+	 * name: clientNameString - we will use the hostname
 	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
 	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
 	 */
+	if (gethostname(clientName, sizeof(clientName)) == -1) {
+		LOG_ERROR("[%p]: Unable to obtain hostname", p);
+		return false;
+	}
 	setupRequestPlist = plist_new_dict();
-	plist_dict_set_item(setupRequestPlist, "clientNameString", "Airplay_2_Client");
+	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
     plist_to_bin(setupRequestPlist, &content, &contentLength);	// Need to confirm where memory allocation/deallocation must happen for content - probably plist_free??
