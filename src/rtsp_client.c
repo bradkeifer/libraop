@@ -286,7 +286,7 @@ bool rtspcl_setup_1(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) {
 	key_data_t hds[2];
 	char *temp;
-	plist_t setupRequestPlist = plist_new_dict();
+	plist_t setupRequestPlist;
 	char *content;
 	uint32_t contentLength;
 	bool ret;
@@ -302,6 +302,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
 	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
 	 */
+	setupRequestPlist = plist_new_dict();
 	plist_dict_set_item(setupRequestPlist, "clientNameString", "Airplay_2_Client");
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
