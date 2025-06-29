@@ -642,8 +642,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 			rtspcld->digest.nonce, url ? url : rtspcld->url, digest);
 	}
 
-	// Adds an unecessary \r\n to data sent
-	// strcat(req,"\r\n");
+	// Adds what appears to be an unecessary \r\n to data sent
+	strcat(req,"\r\n");
 	len = strlen(req);
 
 	if (content_type && content) {
