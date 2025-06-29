@@ -293,8 +293,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 
 	if (!p) return false;
 
-	LOG_ERROR("[%p]: AirPlay 2 SETUP RTSP request not yet developed", p);
-	return false;
+	LOG_DEBUG("[%p]: AirPlay 2 SETUP RTSP request under development", p);
 
 	/*
 	 * We want to create a plist with the following items:
