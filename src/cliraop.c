@@ -536,8 +536,8 @@ int main(int argc, char *argv[])
 	if ((raopcl = raopcl_create(glHost, 0, 0, glDACPid, activeRemote, alac ? RAOP_ALAC : RAOP_ALAC_RAW, DEFAULT_FRAMES_PER_CHUNK,
 								latency, crypto, auth, secret, password, et, md,
 								44100, 16, 2,
-								volume > 0 ? raopcl_float_volume(volume) : -144.0),
-								airplay_version) == NULL)
+								volume > 0 ? raopcl_float_volume(volume) : -144.0,
+								airplay_version)) == NULL)
 	{
 		LOG_ERROR("Cannot init RAOP %p", raopcl);
 		close_platform();
