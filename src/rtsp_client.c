@@ -28,6 +28,7 @@
 #include "cross_util.h"
 #include "cross_log.h"
 #include "rtsp_client.h"
+#include "plist/plist.h"
 
 #define PUBLIC_KEY_SIZE 32
 #define SECRET_KEY_SIZE 32
@@ -276,15 +277,36 @@ bool rtspcl_setup_1(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 
 /*----------------------------------------------------------------------------
 *	AirPlay 2 SETUP RTSP request
+*
+*	Format of this request has been obtained from analysis of shairport-sync
+*	https://github.com/mikebrady/shairport-sync
+*	Many thanks to Mike Brady and all the contributors to that work
+*
 */
 bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd) {
 	key_data_t hds[2];
 	char *temp;
+	plist_t setupRequestPlist = plist_new_dict();
+	char *content;
+	uint32_t contentLength;
+	bool ret;
 
 	if (!p) return false;
 
 	LOG_ERROR("[%p]: AirPlay 2 SETUP RTSP request not yet developed", p);
 	return false;
+
+	/*
+	 * We want to create a plist with the following items:
+	 * name: clientNameString - for the moment we will use "Airplay_2_Client"
+	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
+	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
+	 */
+	plist_dict_set_item(setupRequestPlist, "clientNameString", "Airplay_2_Client");
+	plist_dict_set_item(setupRequestPlist, "streams", NULL);
+	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
+    plist_to_bin(setupRequestPlist, &content, &contentLength);	// Need to confirm where memory allocation/deallocation must happen for content - probably plist_free??
+    plist_free(setupRequestPlist);
 
 	port->audio.rport = 0;
 
@@ -294,11 +316,10 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	if (!hds[0].data) return false;
 	hds[1].key = NULL;
 
-	if (!exec_request(p, "SETUP", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, NULL)) {
-		free(hds[0].data);
-		return false;
-	}
+	ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
 	free(hds[0].data);
+	plist_free(content);
+	if (!ret) return ret;
 
 	if ((temp = kd_lookup(rkd, "Session")) != NULL) {
 		p->session = strdup(strtrim(temp));
