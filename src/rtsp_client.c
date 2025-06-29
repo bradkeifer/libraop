@@ -313,6 +313,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
     plist_to_bin(setupRequestPlist, &content, &contentLength);
     plist_free(setupRequestPlist);
+	LOG_INFO("[%p]: Plist constructed of length %d", p, contentLength;
 
 	port->audio.rport = 0;
 
@@ -322,7 +323,8 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	if (!hds[0].data) return false;
 	hds[1].key = NULL;
 
-	ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
+	ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", NULL, 0, 1, hds, rkd, NULL, NULL, NULL);
+	// ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
 	free(hds[0].data);
 	plist_free(content);
 	if (!ret) return ret;
