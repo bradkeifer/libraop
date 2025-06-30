@@ -314,22 +314,22 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	if (strlen(clientName) == 0) {
 		strcpy(clientName, "Music Assistant");
 	}
-	LOG_INFO("[%p]: rtspcl_setup_2(): clientName obtained %s. Length %d", clientName, strlen(clientName));
+	LOG_INFO("[%p]: rtspcl_setup_2(): clientName obtained %s. Length %d", p, clientName, strlen(clientName));
 	sleep(1);
 	setupRequestPlist = plist_new_dict();
-	LOG_INFO("[%p]: rtspcl_setup_2(): setupRequestPlist obtained %p", setupRequestPlist);
+	LOG_INFO("[%p]: rtspcl_setup_2(): setupRequestPlist obtained %p", p, setupRequestPlist);
 	sleep(1);
 	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
 	plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
-	LOG_INFO("[%p]: rtspcl_setup_2(): Converting plist_to_bin");
+	LOG_INFO("[%p]: rtspcl_setup_2(): Converting plist_to_bin", p);
 	sleep(1);
     if ((ret=plist_to_bin(setupRequestPlist, &content, &contentLength)) != PLIST_ERR_SUCCESS) {
 		LOG_ERROR("[%p]: plist_to_bin():Error %d", p, ret);
 		plist_free(setupRequestPlist);
 		return false;
 	}
-	LOG_INFO("[%p]: rtspcl_setup_2(): Plist converted to binary of length %d", contentLength);
+	LOG_INFO("[%p]: rtspcl_setup_2(): Plist converted to binary of length %d", p, contentLength);
 	sleep(1);
     plist_free(setupRequestPlist);
 	LOG_INFO("[%p]: Plist constructed of length %d", p, contentLength);
