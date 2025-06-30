@@ -38,6 +38,8 @@
 
 #define MAX_KD 64
 
+#define MAX_CLIENT_NAME_SIZE 256
+
 typedef struct rtspcl_s {
     int fd;
     char url[128];
@@ -291,7 +293,7 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	char *content;
 	uint32_t contentLength;
 	bool ret;
-	char clientName[256];
+	char clientName[MAX_CLIENT_NAME_SIZE];
 
 	if (!p) return false;
 
@@ -303,9 +305,9 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
 	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
 	 */
-	LOG_INFO("[%p]: rtspcl_setup_2() called. clientName size is %d", sizeof(clientName));
+	LOG_INFO("[%p]: rtspcl_setup_2() called.");
 	sleep(1);
-	if (gethostname(clientName, sizeof(clientName)) == -1) {
+	if (gethostname(clientName, MAX_CLIENT_NAME_SIZE) == -1) {
 		LOG_ERROR("[%p]: Unable to obtain hostname", p);
 		return false;
 	}
