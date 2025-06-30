@@ -319,9 +319,9 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	setupRequestPlist = plist_new_dict();
 	LOG_INFO("[%p]: rtspcl_setup_2(): setupRequestPlist obtained %p", p, setupRequestPlist);
 	sleep(1);
-	plist_dict_set_item(setupRequestPlist, "clientNameString", clientName);
-	plist_dict_set_item(setupRequestPlist, "streams", NULL);
-	plist_dict_set_item(setupRequestPlist, "timingProtocol", "NTP");
+	plist_dict_set_item(setupRequestPlist, "clientNameString", plist_new_string(clientName));
+	// plist_dict_set_item(setupRequestPlist, "streams", NULL);
+	plist_dict_set_item(setupRequestPlist, "timingProtocol", plist_new_string("NTP"));
 	LOG_INFO("[%p]: rtspcl_setup_2(): Converting plist_to_bin", p);
 	sleep(1);
     if ((ret=plist_to_bin(setupRequestPlist, &content, &contentLength)) != PLIST_ERR_SUCCESS) {
