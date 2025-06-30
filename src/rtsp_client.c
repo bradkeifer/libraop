@@ -38,7 +38,7 @@
 
 #define MAX_KD 64
 
-#define MAX_CLIENT_NAME_SIZE 256
+#define MAX_CLIENT_NAME_SIZE HOST_NAME_MAX + 1
 #define CONTENT_TYPE_APPLE_BINARY_PLIST "application/x-apple-binary-plist"
 
 typedef struct rtspcl_s {
