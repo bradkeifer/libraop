@@ -39,6 +39,7 @@
 #define MAX_KD 64
 
 #define MAX_CLIENT_NAME_SIZE 256
+#define CONTENT_TYPE_APPLE_BINARY_PLIST "application/x-apple-binary-plist"
 
 typedef struct rtspcl_s {
     int fd;
@@ -305,7 +306,6 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	 * streams: NULL indicates that it is the initial setup, so the server opens a TCP port
 	 * timingProtocol: "PTP" or "NTP". We will always use "NTP"
 	 */
-	LOG_INFO("[%p]: rtspcl_setup_2() called.");
 	sleep(1);
 	if (gethostname(clientName, MAX_CLIENT_NAME_SIZE) == -1) {
 		LOG_ERROR("[%p]: Unable to obtain hostname", p);
@@ -314,25 +314,17 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	if (strlen(clientName) == 0) {
 		strcpy(clientName, "Music Assistant");
 	}
-	LOG_INFO("[%p]: rtspcl_setup_2(): clientName obtained %s. Length %d", p, clientName, strlen(clientName));
-	sleep(1);
 	setupRequestPlist = plist_new_dict();
-	LOG_INFO("[%p]: rtspcl_setup_2(): setupRequestPlist obtained %p", p, setupRequestPlist);
-	sleep(1);
 	plist_dict_set_item(setupRequestPlist, "clientNameString", plist_new_string(clientName));
 	// plist_dict_set_item(setupRequestPlist, "streams", NULL);
 	plist_dict_set_item(setupRequestPlist, "timingProtocol", plist_new_string("NTP"));
-	LOG_INFO("[%p]: rtspcl_setup_2(): Converting plist_to_bin", p);
-	sleep(1);
     if ((ret=plist_to_bin(setupRequestPlist, &content, &contentLength)) != PLIST_ERR_SUCCESS) {
 		LOG_ERROR("[%p]: plist_to_bin():Error %d", p, ret);
 		plist_free(setupRequestPlist);
 		return false;
 	}
-	LOG_INFO("[%p]: rtspcl_setup_2(): Plist converted to binary of length %d", p, contentLength);
-	sleep(1);
     plist_free(setupRequestPlist);
-	LOG_INFO("[%p]: Plist constructed of length %d", p, contentLength);
+	LOG_INFO("[%p]: Plist binary constructed of length %d", p, contentLength);
 
 	hds[0].key = "Transport";
 	(void)! asprintf(&hds[0].data, "RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port=%d;timing_port=%d",
@@ -340,8 +332,8 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	if (!hds[0].data) return false;
 	hds[1].key = NULL;
 
-	ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", NULL, 0, 1, hds, rkd, NULL, NULL, NULL);
-	// ret = exec_request(p, "SETUP", "application/x-apple-binary-plist", content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
+	// ret = exec_request(p, "SETUP", CONTENT_TYPE_APPLE_BINARY_PLIST, NULL, 0, 1, hds, rkd, NULL, NULL, NULL);
+	ret = exec_request(p, "SETUP", CONTENT_TYPE_APPLE_BINARY_PLIST, content, contentLength, 1, hds, rkd, NULL, NULL, NULL);
 	free(hds[0].data);
 	free(content);
 	if (!ret) return ret;
