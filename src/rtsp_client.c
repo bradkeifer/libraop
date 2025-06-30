@@ -305,11 +305,11 @@ bool rtspcl_setup_2(struct rtspcl_s *p, struct rtp_port_s *port, key_data_t *rkd
 	 */
 	LOG_INFO("[%p]: rtspcl_setup_2() called");
 	sleep(1);
-	if (gethostname(clientName, sizeof(clientName)) == -1) {
+	if (gethostname(&clientName, sizeof(clientName)) == -1) {
 		LOG_ERROR("[%p]: Unable to obtain hostname", p);
 		return false;
 	}
-	LOG_INFO("[%p]: rtspcl_setup_2(): clientName obtained %s", clientName);
+	LOG_INFO("[%p]: rtspcl_setup_2(): clientName obtained %s. Length %d", clientName, strlen(clientName));
 	sleep(1);
 	setupRequestPlist = plist_new_dict();
 	LOG_INFO("[%p]: rtspcl_setup_2(): setupRequestPlist obtained %p", setupRequestPlist);
