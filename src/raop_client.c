@@ -1117,7 +1117,7 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	// 	goto erexit;
 	// }
 	if (!raopcl_analyse_setup(p, kd))  {
-		kd_free(kd)
+		kd_free(kd);
 		goto erexit;
 	}
 	kd_free(kd);
