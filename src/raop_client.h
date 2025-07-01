@@ -80,6 +80,19 @@ typedef struct ntp_s {
 #define MS2TS(ms, rate) ((((uint64_t) (ms)) * (rate)) / 1000)
 #define TS2MS(ts, rate) NTP2MS(TS2NTP(ts,rate))
 
+#define RAOP_OPTION_NONE 0x00
+#define RAOP_OPTION_ANNOUNCE 1 << 1
+#define RAOP_OPTION_SETUP 1 << 2
+#define RAOP_OPTION_RECORD 1 << 3
+#define RAOP_OPTION_PAUSE 1 << 4
+#define RAOP_OPTION_FLUSH 1 << 5
+#define RAOP_OPTION_FLUSHBUFFERED 1 << 6
+#define RAOP_OPTION_TEARDOWN 1 << 7
+#define RAOP_OPTION_OPTIONS 1 << 8
+#define RAOP_OPTION_POST 1 << 9
+#define RAOP_OPTION_GET 1 << 10
+#define RAOP_OPTION_PUT 1 << 11
+
 typedef struct raopcl_t {uint32_t dummy;} raopcl_t;
 
 struct raopcl_s;
