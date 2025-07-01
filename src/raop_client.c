@@ -958,6 +958,43 @@ static bool raopcl_analyse_setup(struct raopcl_s *p, key_data_t *setup_kd)
 }
 
 /*----------------------------------------------------------------------------*/
+static bool raopcl_analyse_options(struct raopcl_s *p, key_data_t *options_kd)
+{
+	char *buf, *token, *pc;
+	const char delimiters[] = ",";
+	bool rc = true;
+
+
+	// get options info
+	if ((buf = kd_lookup(options_kd, "Public")) == NULL){
+		LOG_ERROR("[%p]: no set of public options in response", p);
+		rc = false;
+	}
+	LOG_INFO("[%p]: Public OPTIONS are %s", p, buf);
+
+	token = strtok(buf, delimiters);
+	while (token) {
+		LOG_INFO("[%p]: OPTION: %s", p, token);
+		token = strtok(NULL,delimiters);
+	}
+
+	// get AirTunes version info
+	if ((buf = kd_lookup(options_kd, "AirTunes")) == NULL){
+		LOG_ERROR("[%p]: no AirTunes version in response", p);
+		rc = false;
+	}
+	LOG_INFO("[%p]: AirTunes data is %s", p, buf);
+
+	token = strtok(buf, "/");
+	while (token) {
+		LOG_INFO("[%p]: AirTunes Version: %s", p, token);
+		token = strtok(NULL,"/");
+	}
+
+	return rc;
+}
+
+/*----------------------------------------------------------------------------*/
 bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, bool set_volume)
 {
 	struct {
@@ -969,6 +1006,7 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	char *sac = NULL;
 	char sdp[1024];
 	key_data_t kd[64];
+	key_data_t okd[64];	// OPTIONS key data
 	char *buf;
 	struct {
 		uint16_t count, offset;
@@ -1008,7 +1046,12 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 
 	// Let's get the set of permissible OPTIONS from the player
 	// We might be able to use them to manage future exchanges
-	if (!rtspcl_options(p->rtspcl, NULL)) goto erexit;
+	if (!rtspcl_options(p->rtspcl, okd)) goto erexit;
+	if (!raopcl_analyse_options(p, okd)) {
+		kd_free(okd);
+		goto erexit;
+	}
+	kd_free(okd);
 
 	// RTSP pairing verify for AppleTV
 	if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
@@ -1064,15 +1107,19 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	if (p->rtp_ports.ctrl.fd < 0 ||  p->rtp_ports.audio.fd < 0) goto erexit;
 
 	// RTSP SETUP : get all RTP destination ports
-	if (p->airplay_version == 1) {
-		if (!rtspcl_setup_1(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
-	} else if (p->airplay_version == 2) {
-		if (!rtspcl_setup_2(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
-	} else {
-		LOG_ERROR("[%p]: AirPlay version %d is not supported", p, p->airplay_version);
+	if (!rtspcl_setup_1(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	// if (p->airplay_version == 1) {
+	// 	if (!rtspcl_setup_1(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	// } else if (p->airplay_version == 2) {
+	// 	if (!rtspcl_setup_2(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
+	// } else {
+	// 	LOG_ERROR("[%p]: AirPlay version %d is not supported", p, p->airplay_version);
+	// 	goto erexit;
+	// }
+	if (!raopcl_analyse_setup(p, kd))  {
+		kd_free(kd)
 		goto erexit;
 	}
-	if (!raopcl_analyse_setup(p, kd)) goto erexit;
 	kd_free(kd);
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
