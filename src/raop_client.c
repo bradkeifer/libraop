@@ -173,7 +173,8 @@ typedef struct raopcl_s {
 	uint8_t md_caps;
 	uint16_t port_base, port_range;
 	char passwd[64];
-	int airplay_version;
+	uint8_t airplay_version;
+	uint16_t supported_raop_options;
 } raopcl_data_t;
 
 
@@ -964,6 +965,11 @@ static bool raopcl_analyse_options(struct raopcl_s *p, key_data_t *options_kd)
 	const char delimiters[] = ",";
 	bool rc = true;
 
+	int i = 0;
+	while (options_kd && options_kd[i].key){
+		LOG_INFO("[%p]: Options key data key: %s, data: %s", p, options_kd[i].key, options_kd[i].data);
+		i++;
+	}
 
 	// get options info
 	if ((buf = kd_lookup(options_kd, "Public")) == NULL){
@@ -978,17 +984,17 @@ static bool raopcl_analyse_options(struct raopcl_s *p, key_data_t *options_kd)
 		token = strtok(NULL,delimiters);
 	}
 
-	// get AirTunes version info
-	if ((buf = kd_lookup(options_kd, "AirTunes")) == NULL){
-		LOG_ERROR("[%p]: no AirTunes version in response", p);
-		rc = false;
-	}
-	LOG_INFO("[%p]: AirTunes data is %s", p, buf);
+	// // get AirTunes version info
+	// if ((buf = kd_lookup(options_kd, "AirTunes")) == NULL){
+	// 	LOG_ERROR("[%p]: no AirTunes version in response", p);
+	// 	rc = false;
+	// }
+	// LOG_INFO("[%p]: AirTunes data is %s", p, buf);
 
-	token = strtok(buf, "/");
-	while (token) {
-		LOG_INFO("[%p]: AirTunes Version: %s", p, token);
-		token = strtok(NULL,"/");
+	// token = strtok(buf, "/");
+	// while (token) {
+	// 	LOG_INFO("[%p]: AirTunes Version: %s", p, token);
+	// 	token = strtok(NULL,"/");
 	}
 
 	return rc;
