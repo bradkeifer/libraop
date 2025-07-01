@@ -995,7 +995,7 @@ static bool raopcl_analyse_options(struct raopcl_s *p, key_data_t *options_kd)
 	// while (token) {
 	// 	LOG_INFO("[%p]: AirTunes Version: %s", p, token);
 	// 	token = strtok(NULL,"/");
-	}
+	// }
 
 	return rc;
 }
