@@ -457,8 +457,14 @@ bool rtspcl_set_daap(struct rtspcl_s *p, uint32_t timestamp, int count, va_list 
 
 /*----------------------------------------------------------------------------*/
 bool rtspcl_options(struct rtspcl_s *p, key_data_t *rkd) {
+	key_data_t hds[2];
 	if (!p) return false;
-	return exec_request(p, "OPTIONS", NULL, NULL, 0, 1, NULL, rkd, NULL, NULL, "*");
+	
+	hds[0].key	= "Apple-Challenge";
+	hds[0].data	= "SdX9kFJVxgKVMFof/Znj4Q";
+	hds[1].key	= NULL;
+
+	return exec_request(p, "OPTIONS", NULL, NULL, 0, 1, hds, rkd, NULL, NULL, "*");
 }
 
 /*----------------------------------------------------------------------------*/
