@@ -705,6 +705,7 @@ struct raopcl_s *raopcl_create(struct in_addr host, uint16_t port_base, uint16_t
 
 	// init RTSP if needed
 	if (((raopcld->rtspcl = rtspcl_create("iTunes/7.6.2 (Windows; N;)")) == NULL)) {
+	// if (((raopcld->rtspcl = rtspcl_create("libraop/1.0")) == NULL)) { Future: Make this Music-Assistant/version
 		LOG_ERROR("[%p]: Cannot create RTSP context", raopcld);
 		free(raopcld);
 		return NULL;
@@ -1004,6 +1005,10 @@ bool raopcl_connect(struct raopcl_s *p, struct in_addr peer, uint16_t destport, 
 	if (!rtspcl_connect(p->rtspcl, p->host_addr, peer, destport, sid)) goto erexit;
 
 	LOG_INFO("[%p]: local interface %s", p, rtspcl_local_ip(p->rtspcl));
+
+	// Let's get the set of permissible OPTIONS from the player
+	// We might be able to use them to manage future exchanges
+	if (!rtspcl_options(p->rtspcl, NULL)) goto erexit;
 
 	// RTSP pairing verify for AppleTV
 	if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
