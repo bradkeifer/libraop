@@ -104,9 +104,13 @@ bool rtspcl_is_sane(struct rtspcl_s *p) {
 }
 
 /*----------------------------------------------------------------------------*/
-// Open a TCP socket and connect to the RTSP server
-// Establishes RTSP url in p->url
-// Returns true on success, false on failure
+// Connect to the RTSP server and setup internal data structures
+// @param p RTSP client handle. p->url set to be the RTSP URL
+// @param local local IP address details
+// @param host AirPlay device IP address details
+// @param destport AirPlay device port to open for RTSP connection
+// @param sid session id defined in the RTSP URL
+// @return true on success, false on failure
 bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr host, uint16_t destport, char *sid) {
 	if (!p) return false;
 
@@ -754,8 +758,6 @@ bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
 	}
-	LOG_DEBUG("response of length %d is %sbinary\n", 
-		resp_len, plist_is_binary(resp_content, resp_len) ? "" : "not ");
 
 	plist_from_bin(resp_content, resp_len, &pinfo);
 
@@ -763,7 +765,6 @@ bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 		LOG_ERROR("Unable to extract plist from GET /info response.\n");
 		goto erexit;
 	}
-	LOG_DEBUG("Extracted plist, length %d, from GET /info response.\n", resp_len);
 	*rplist = pinfo;
 	*rplen = resp_len;
 	free(resp_content);

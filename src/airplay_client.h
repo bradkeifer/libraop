@@ -44,6 +44,29 @@
 #define AIRPLAY_PINFO_FEATURES						"features"
 #define AIRPLAY_PINFO_NAME							"name"
 
+// From https://openairplay.github.io/airplay-spec/status_flags.html
+enum airplay_status_flags
+{
+  AIRPLAY_FLAG_PROBLEM_DETECTED               = (1 << 0),
+  AIRPLAY_FLAG_NOT_CONFIGURED                 = (1 << 1),
+  AIRPLAY_FLAG_AUDIO_CABLE_ATTACHED           = (1 << 2),
+  AIRPLAY_FLAG_PIN_REQUIRED                   = (1 << 3),
+  AIRPLAY_FLAG_SUPPORTS_FROM_CLOUD            = (1 << 6),
+  AIRPLAY_FLAG_PASSWORD_REQUIRED              = (1 << 7),
+  AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED      = (1 << 9),
+  AIRPLAY_FLAG_SETUP_HK_ACCESS_CTRL           = (1 << 10),
+  AIRPLAY_FLAG_SUPPORTS_RELAY                 = (1 << 11),
+  AIRPLAY_FLAG_SILENT_PRIMARY                 = (1 << 12),
+  AIRPLAY_FLAG_TIGHT_SYNC_IS_GRP_LEADER       = (1 << 13),
+  AIRPLAY_FLAG_TIGHT_SYNC_BUDDY_NOT_REACHABLE = (1 << 14),
+  AIRPLAY_FLAG_IS_APPLE_MUSIC_SUBSCRIBER      = (1 << 15),
+  AIRPLAY_FLAG_CLOUD_LIBRARY_ON               = (1 << 16),
+  AIRPLAY_FLAG_RECEIVER_IS_BUSY               = (1 << 17),
+};
+
+#define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
+#define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
+
 typedef struct airplaycl_t {uint32_t dummy;} airplaycl_t;
 
 struct airplaycl_s;

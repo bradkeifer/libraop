@@ -140,7 +140,9 @@ typedef struct {
 typedef struct airplaycl_s {
 	struct rtspcl_s *rtspcl;
 	airplay_state_t state;
-	char DACP_id[17], active_remote[11];
+	uint64_t status_flags;	// Added for AirPlay2 - double check they are required once implementation is working
+	char DACP_id[17], active_remote[11], device_id[AIRPLAY_DEVICE_ID_SIZE + 1];
+	char name[AIRPLAY_NAME_SIZE + 1];
 	struct {
 		unsigned int ctrl, time;
 		struct { unsigned int avail, select, send; } audio;
@@ -923,18 +925,123 @@ static bool airplaycl_set_sdp(struct airplaycl_s *p, char *sdp)
 /*----------------------------------------------------------------------------*/
 // Extract AirPlay player information that is required for managing the session
 // and store it in the airplay_s structure
+// @param p the airplay client handle that will be updated
+// @param pinfo the binary plist containing the airplay device information
+// @returns true on success, false on failure
+// @todo Maybe we also need to extract the 'features' and check them against our capabilities?
 static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
-	char *device_id = NULL;
+	const char *device_id = NULL;
+	const char *name = NULL;
+	plist_t item = NULL;
 
-	LOG_DEBUG("p %p, pinfo %p, %s\n", p, pinfo, pinfo);
-
-	plist_t item = plist_dict_get_item(pinfo, "deviceID");
+	// Extract the device id and save into our airplay client data structure
+	item = plist_dict_get_item(pinfo, AIRPLAY_PINFO_DEVICE_ID);
 	if (item) {
 		device_id = (char *) plist_get_string_ptr(item, NULL);
 		LOG_DEBUG("Device ID: %s\n", device_id);
 	}
-	else LOG_DEBUG("No Device ID\n");
+	else {
+		LOG_ERROR("No Device ID. Please raise an issue in github\n");
+		return false;
+	}
 
+	if (strlen(device_id) > AIRPLAY_DEVICE_ID_SIZE) {
+		LOG_ERROR("Device Id %s exceeds maximum size of %d bytes\n", device_id, AIRPLAY_DEVICE_ID_SIZE);
+		LOG_ERROR("Please raise an issue in github\n");
+		goto erexit;
+	}
+	else {
+		strncpy(p->device_id, device_id, strlen(device_id));
+	}
+
+	// Extract the device name and save into our airplay client data structure
+	item = plist_dict_get_item(pinfo, AIRPLAY_PINFO_NAME);
+	if (item) {
+		name = (char *) plist_get_string_ptr(item, NULL);
+		LOG_DEBUG("Device ID: %s\n", name);
+	}
+	else {
+		LOG_ERROR("No Device name. Please raise an issue in github\n");
+		return false;
+	}
+
+	if (strlen(name) > AIRPLAY_NAME_SIZE) {
+		LOG_ERROR("Device Id %s exceeds maximum size of %d bytes\n", name, AIRPLAY_NAME_SIZE);
+		LOG_ERROR("Please raise an issue in github\n");
+		goto erexit;
+	}
+	else {
+		strncpy(p->name, name, strlen(name));
+	}
+
+	// Extract status flag and assess
+	item = plist_dict_get_item(pinfo, AIRPLAY_PINFO_STATUS_FLAGS);
+	if (item) {
+		plist_get_uint_val(item, &p->status_flags);
+		// p->status_flags = *status_flags;
+		plist_free(item);
+	}
+
+	LOG_INFO("%s:Status flags %u: cable attached %d, one time pairing %d, password %d, PIN %d\n",
+		p->name, p->status_flags, 
+		(bool)(p->status_flags & AIRPLAY_FLAG_AUDIO_CABLE_ATTACHED), 
+		(bool)(p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED),
+		(bool)(p->status_flags & AIRPLAY_FLAG_PASSWORD_REQUIRED), 
+		(bool)(p->status_flags & AIRPLAY_FLAG_PIN_REQUIRED));
+
+	// We need to assess the status flags to determine what the next step should be.
+	// It might make sense to replicate the state machine approach used in owntones
+	if (p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED) {
+		LOG_INFO("%s:One time pairing still to be implemented - is this based on the secret??\n", p->name);
+		return false;
+    	// rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+
+      	// if (!device->auth_key) {
+		// 	device->requires_auth = 1;
+        // 	rs->state = AIRPLAY_STATE_AUTH;
+	  	// 	return AIRPLAY_SEQ_PIN_START;
+		// }
+
+      	// rs->state = AIRPLAY_STATE_INFO;
+      	// return AIRPLAY_SEQ_PAIR_VERIFY;
+    }
+  	else if (p->status_flags & AIRPLAY_FLAG_PIN_REQUIRED) {
+		LOG_INFO("%s:PIN entry still to be implemented\n", p->name);
+		return false;
+		// free(device->auth_key);
+		// device->auth_key = NULL;
+		// device->requires_auth = 1;
+
+		// rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+		// rs->state = AIRPLAY_STATE_AUTH;
+		// return AIRPLAY_SEQ_PIN_START;
+    }
+	else if (p->status_flags & AIRPLAY_FLAG_PASSWORD_REQUIRED) {
+		if (strlen(p->passwd) == 0) {
+			LOG_ERROR("%s:Password authentication required, but none given\n", p->name);
+			return false;
+		}
+		LOG_INFO("%s:Password authentication still to be implemented\n", p->name);
+		return false;
+		// rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+
+		// if (!rs->password) {
+		// 	DPRINTF(E_LOG, L_AIRPLAY, "'%s' requires password authentication, but none given in config\n", rs->devname);
+		// 	return AIRPLAY_SEQ_ABORT;
+		// }
+		// else if (!device->auth_key) {
+        // 	rs->state = AIRPLAY_STATE_AUTH;
+		// 	return AIRPLAY_SEQ_PAIR_SETUP;
+		// }
+
+		// rs->state = AIRPLAY_STATE_INFO;
+		// return AIRPLAY_SEQ_PAIR_VERIFY;
+    }
+
+	return true;
+
+erexit:
+	plist_free(item);
 	return false;
 }
 
@@ -989,6 +1096,22 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	LOG_INFO("[%p]: local interface %s", p, rtspcl_local_ip(p->rtspcl));
 
+	// Now we need to send RTSP GET /info to obtain airplay device details that will
+	// be required in future exchanges 
+	if (!rtspcl_get_info(p->rtspcl, &pinfo, &plen)) {
+		LOG_ERROR("[%p]: cannot get info", p);
+		goto erexit;
+	}
+	if (!pinfo) {
+		LOG_ERROR("No plist returned from rtspcl_get_info()\n");
+		goto erexit;
+	}
+	if (!airplaycl_analyse_info(p, pinfo)) {
+		LOG_ERROR("Unable to analyse GET /info plist\n");
+		goto erexit;
+	}
+	plist_free(pinfo);
+
 	// RTSP pairing verify for AppleTV
 	if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
 
@@ -1008,7 +1131,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	if (!airplaycl_set_sdp(p, sdp)) goto erexit;
 
-	// Create timing srvic
+	// Create timing service
 	p->rtp_ports.time.rport = 0;
 
 	do {
@@ -1029,26 +1152,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		p->rtp_ports.ctrl.fd = open_udp_socket(p->host_addr, &p->rtp_ports.ctrl.lport, true);
 	} while (p->rtp_ports.ctrl.fd < 0 && port.count < p->port_range);
 	if (p->rtp_ports.ctrl.fd < 0) goto erexit;
-
-	// Now we need to send RTSP GET /info to obtain airplay device details that will
-	// be required in future exchanges 
-	if (!rtspcl_get_info(p->rtspcl, &pinfo, &plen)) {
-		LOG_ERROR("[%p]: cannot get info", p);
-		goto erexit;
-	}
-	LOG_DEBUG("Obtained AirPlay device info at pinfo:%p, &pinfo: %p, length %d\n", 
-		pinfo, &pinfo, plen);
-	if (!pinfo) {
-		LOG_ERROR("No plist returned from rtspcl_get_info()\n");
-		goto erexit;
-	}
-	LOG_DEBUG("plist returned is %p\n", pinfo);
-	if (!airplaycl_analyse_info(p, pinfo)) {
-		LOG_ERROR("Unable to analyse GET /info plist\n");
-		goto erexit;
-	}
-	LOG_DEBUG("We now need to analyse the plist and extract necessary data\n");
-	plist_free(pinfo);
 
 	// Open Audio port
 	do {
