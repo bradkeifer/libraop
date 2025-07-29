@@ -8,7 +8,7 @@ Based on libraop by philippe44 (all rights reserved). See upstream repo for more
 
 ```sh
 apt-get update
-apt-get install -y build-essential cmake  libssl-dev
+apt-get install -y build-essential cmake  libssl-dev libplist-dev
 git clone https://github.com/music-assistant/libraop.git
 cd libraop
 git submodule update --init
@@ -20,7 +20,7 @@ git submodule update --init
 ## Building (alpine musl build)
 
 ```sh
-apk add --update alpine-sdk build-base openssl-dev
+apk add --update alpine-sdk build-base openssl-dev libplist-dev
 git clone https://github.com/music-assistant/libraop.git
 cd libraop
 git submodule update --init
