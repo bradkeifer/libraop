@@ -34,6 +34,7 @@
 
 #include "cross_thread.h"
 #include "raop_client.h"
+#include "airplay_client.h"
 #include "cross_net.h"
 #include "cross_ssl.h"
 #include "cross_util.h"
@@ -59,6 +60,7 @@ int cmdPipeFd;
 char cmdPipeBuf[512];
 int latency = MS2TS(1000, 44100);
 struct raopcl_s *raopcl;
+struct airplaycl_s *airplaycl;
 enum
 {
 	STOPPED,
@@ -69,6 +71,7 @@ enum
 // debug level from tools & other elements
 log_level util_loglevel;
 log_level raop_loglevel;
+log_level airplay_loglevel;
 log_level main_log;
 
 // our debug level
@@ -77,18 +80,18 @@ log_level *loglevel = &main_log;
 // different combination of debug levels per channel
 struct debug_s
 {
-	int main, raop, util;
+	int main, raop, airplay, util;
 } debug[] = {
-	{lSILENCE, lSILENCE, lSILENCE},
-	{lERROR, lERROR, lERROR},
-	{lINFO, lERROR, lERROR},
-	{lINFO, lINFO, lERROR},
-	{lDEBUG, lERROR, lERROR},
-	{lDEBUG, lINFO, lERROR},
-	{lDEBUG, lDEBUG, lERROR},
-	{lSDEBUG, lINFO, lERROR},
-	{lSDEBUG, lDEBUG, lERROR},
-	{lSDEBUG, lSDEBUG, lERROR},
+	{lSILENCE, lSILENCE, lSILENCE, lSILENCE},
+	{lERROR, lERROR, lERROR, lERROR},
+	{lINFO, lERROR, lINFO, lERROR},
+	{lINFO, lINFO, lINFO, lERROR},
+	{lDEBUG, lERROR, lDEBUG, lERROR},
+	{lDEBUG, lINFO, lDEBUG, lERROR},
+	{lDEBUG, lDEBUG, lDEBUG, lERROR},
+	{lSDEBUG, lINFO, lSDEBUG, lERROR},
+	{lSDEBUG, lDEBUG, lSDEBUG, lERROR},
+	{lSDEBUG, lSDEBUG, lSDEBUG, lERROR},
 };
 
 /*----------------------------------------------------------------------------*/
@@ -110,12 +113,15 @@ static int print_usage(char *argv[])
 		   "\t[-dacp <dacp_id>] (DACP id)\n"
 		   "\t[-activeremote <activeremote_id>] (Active Remote id)\n"
 		   "\t[-alac] send ALAC compressed audio\n"
+		   "\t[-version <version>] AirPlay version to use: 1 or 2 (default 1)\n"
+		   "\t[-useragent <useragent>] (User-Agent to use, default is %s\n"
 
 		   "\t[-et <value>] (et in mDNS: 4 for airport-express and used to detect MFi)\n"
 		   "\t[-md <value>] (md in mDNS: metadata capabilties 0=text, 1=artwork, 2=progress)\n"
 		   "\t[-am <value>] (am in mDNS: modelname)\n"
 		   "\t[-pk <value>] (pk in mDNS: pairing key info)\n"
 		   "\t[-pw <value>] (pw in mDNS: password info)\n"
+		   "\t[-device_id <value>] (device id in Airplay mDNS. Only relevant for AirPlay2 clients)\n"
 
 		   "\t[-secret <secret>] (valid secret for AppleTV)\n"
 		   "\t[-password <password>] (device password)\n"
@@ -124,7 +130,7 @@ static int print_usage(char *argv[])
 		   "\t[-if <ipaddress>] (IP of the interface to bind to)\n"
 
 		   "\t[-debug <debug level>] (0 = silent)\n",
-		   name);
+		   name, argv[0]);
 	return -1;
 }
 
@@ -308,7 +314,7 @@ int main(int argc, char *argv[])
 	char *glDACPid = "1A2B3D4EA1B2C3D4";
 	char *activeRemote = "ap5918800d";
 	char *fname = NULL;
-	int volume = 0, wait = 0;
+	int volume = 0, wait = 0, ap_version = 1;;
 	struct
 	{
 		struct hostent *hostent;
@@ -320,13 +326,14 @@ int main(int argc, char *argv[])
 	player.port = 5000;
 
 	int infile;
-	uint8_t *buf;
+	uint8_t *buf = NULL;
 	int i, n = -1, level = 3;
 	raop_crypto_t crypto = RAOP_CLEAR;
 	uint64_t start = 0, start_at = 0, last = 0, frames = 0;
 	bool alac = false, encryption = false, auth = false;
 	char *passwd = "", *secret = "", *md = "0,1,2", *et = "0,4", *am = "", *pk = "", *pw = "";
 	char *iface = NULL;
+	char *userAgent = "";
 	uint32_t glNetmask;
 	char glInterface[16] = "?";
 	static struct in_addr glHost;
@@ -380,6 +387,26 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "-alac"))
 		{
 			alac = true;
+		}
+		else if (!strcmp(argv[i], "-version"))
+		{
+			ap_version = atoi(argv[++i]);
+		}
+		else if (!strcmp(argv[i], "-useragent"))
+		{
+			userAgent = argv[++i];
+		}
+		else if (!strcmp(argv[i], "-am"))
+		{
+			am = argv[++i];
+		}
+		else if (!strcmp(argv[i], "-pk"))
+		{
+			pk = argv[++i];
+		}
+		else if (!strcmp(argv[i], "-pw"))
+		{
+			pw = argv[++i];
 		}
 		else if (!strcmp(argv[i], "-et"))
 		{
@@ -442,6 +469,16 @@ int main(int argc, char *argv[])
 	util_loglevel = debug[level].util;
 	raop_loglevel = debug[level].raop;
 	main_log = debug[level].main;
+
+	LOG_DEBUG("Using AirPlay version %d", ap_version);
+	if (ap_version < 1 || ap_version > 2)
+	{
+		LOG_ERROR("Invalid AirPlay version %d, must be 1 or 2", ap_version);
+		return print_usage(argv);
+	}
+
+	userAgent = userAgent && *userAgent ? userAgent : argv[0];
+	LOG_DEBUG("User-Agent: %s", userAgent);
 
 	glHost = get_interface(!strchr(glInterface, '?') ? glInterface : NULL, &iface, &glNetmask);
 	LOG_INFO("Binding to %s [%s] with mask 0x%08x", inet_ntoa(glHost), iface, ntohl(glNetmask));
@@ -514,98 +551,151 @@ int main(int argc, char *argv[])
 		password[len] = '\0';
 	}
 
-	// create the raop context
-	if ((raopcl = raopcl_create(glHost, 0, 0, glDACPid, activeRemote, alac ? RAOP_ALAC : RAOP_ALAC_RAW, DEFAULT_FRAMES_PER_CHUNK,
-								latency, crypto, auth, secret, password, et, md,
-								44100, 16, 2,
-								volume > 0 ? raopcl_float_volume(volume) : -144.0)) == NULL)
+	switch(ap_version)
 	{
-		LOG_ERROR("Cannot init RAOP %p", raopcl);
-		close_platform();
-		exit(1);
-	}
-
-	// connect to player
-	LOG_INFO("Connecting to player: %s (%s:%hu)", player.udn ? player.udn : player.hostname, inet_ntoa(player.addr), player.port);
-	if (!raopcl_connect(raopcl, player.addr, player.port, volume > 0))
-	{
-		LOG_ERROR("Cannot connect to AirPlay device %s:%hu, check firewall & port", inet_ntoa(player.addr), player.port);
-		goto exit;
-	}
-
-	latency = raopcl_latency(raopcl);
-
-	LOG_INFO("connected to %s on port %d, player latency is %d ms", inet_ntoa(player.addr),
-			 player.port, (int)TS2MS(latency, raopcl_sample_rate(raopcl)));
-
-	if (start || wait)
-	{
-		uint64_t now = raopcl_get_ntp(NULL);
-
-		start_at = (start ? start : now) + MS2NTP(wait) -
-				   TS2NTP(latency, raopcl_sample_rate(raopcl));
-
-		LOG_INFO("now %u.%u, audio starts at NTP %u.%u (in %u ms)", RAOP_SECNTP(now), RAOP_SECNTP(start_at),
-				 (start_at + TS2NTP(latency, raopcl_sample_rate(raopcl)) > now) ? (uint32_t)NTP2MS(start_at - now + TS2NTP(latency, raopcl_sample_rate(raopcl))) : 0);
-
-		raopcl_start_at(raopcl, start_at);
-	}
-
-	// start the command/metadata reader thread
-	pthread_create(&glCmdPipeReaderThread, NULL, CmdPipeReaderThread, NULL);
-
-	start = raopcl_get_ntp(NULL);
-	status = PLAYING;
-
-	buf = malloc(DEFAULT_FRAMES_PER_CHUNK * 4);
-	uint32_t KeepAlive = 0;
-
-	// keep reading audio from stdin until exit/EOF
-	while (n || raopcl_is_playing(raopcl))
-	{
-		uint64_t playtime, now;
-
-		if (status == STOPPED)
-			break;
-
-		now = raopcl_get_ntp(NULL);
-
-		// execute every second
-		if (now - last > MS2NTP(1000))
-		{
-			last = now;
-			uint32_t elapsed = TS2MS(frames - raopcl_latency(raopcl), raopcl_sample_rate(raopcl));
-			if (frames && frames > raopcl_latency(raopcl))
+		case 1:
+			LOG_INFO("Using AirPlay version 1");
+			// create the raop context
+			if ((raopcl = raopcl_create(glHost, 0, 0, glDACPid, activeRemote, alac ? RAOP_ALAC : RAOP_ALAC_RAW, DEFAULT_FRAMES_PER_CHUNK,
+										latency, crypto, auth, secret, password, et, md,
+										44100, 16, 2,
+										volume > 0 ? raopcl_float_volume(volume) : -144.0)) == NULL)
 			{
-				LOG_INFO("elapsed milliseconds: %" PRIu64, elapsed);
+				LOG_ERROR("Cannot init RAOP %p", raopcl);
+				close_platform();
+				exit(1);
 			}
 
-			// send keepalive when needed (to prevent stop playback on homepods)
-			if (!(KeepAlive++ & 0x0f))
-				raopcl_keepalive(raopcl);
-		}
+			// connect to player
+			LOG_INFO("Connecting to player: %s (%s:%hu)", player.udn ? player.udn : player.hostname, inet_ntoa(player.addr), player.port);
+			if (!raopcl_connect(raopcl, player.addr, player.port, volume > 0))
+			{
+				LOG_ERROR("Cannot connect to AirPlay device %s:%hu, check firewall & port", inet_ntoa(player.addr), player.port);
+				goto exit;
+			}
 
-		// send chunk if needed
-		if (status == PLAYING && raopcl_accept_frames(raopcl))
-		{
-			n = read(infile, buf, DEFAULT_FRAMES_PER_CHUNK * 4);
-			if (!n)
-				continue;
+			latency = raopcl_latency(raopcl);
 
-			raopcl_send_chunk(raopcl, buf, n / 4, &playtime);
-			frames += n / 4;
-		}
-		else
-		{
-			// prevent full cpu usage if we're waiting on data
-			usleep(1000);
-		}
+			LOG_INFO("connected to %s on port %d, player latency is %d ms", inet_ntoa(player.addr),
+					player.port, (int)TS2MS(latency, raopcl_sample_rate(raopcl)));
+
+			if (start || wait)
+			{
+				uint64_t now = raopcl_get_ntp(NULL);
+
+				start_at = (start ? start : now) + MS2NTP(wait) -
+						TS2NTP(latency, raopcl_sample_rate(raopcl));
+
+				LOG_INFO("now %u.%u, audio starts at NTP %u.%u (in %u ms)", RAOP_SECNTP(now), RAOP_SECNTP(start_at),
+						(start_at + TS2NTP(latency, raopcl_sample_rate(raopcl)) > now) ? (uint32_t)NTP2MS(start_at - now + TS2NTP(latency, raopcl_sample_rate(raopcl))) : 0);
+
+				raopcl_start_at(raopcl, start_at);
+			}
+
+			// start the command/metadata reader thread
+			pthread_create(&glCmdPipeReaderThread, NULL, CmdPipeReaderThread, NULL);
+
+			start = raopcl_get_ntp(NULL);
+			status = PLAYING;
+
+			buf = malloc(DEFAULT_FRAMES_PER_CHUNK * 4);
+			uint32_t KeepAlive = 0;
+
+			// keep reading audio from stdin until exit/EOF
+			while (n || raopcl_is_playing(raopcl))
+			{
+				uint64_t playtime, now;
+
+				if (status == STOPPED)
+					break;
+
+				now = raopcl_get_ntp(NULL);
+
+				// execute every second
+				if (now - last > MS2NTP(1000))
+				{
+					last = now;
+					uint32_t elapsed = TS2MS(frames - raopcl_latency(raopcl), raopcl_sample_rate(raopcl));
+					if (frames && frames > raopcl_latency(raopcl))
+					{
+						LOG_INFO("elapsed milliseconds: %" PRIu64, elapsed);
+					}
+
+					// send keepalive when needed (to prevent stop playback on homepods)
+					if (!(KeepAlive++ & 0x0f))
+						raopcl_keepalive(raopcl);
+				}
+
+				// send chunk if needed
+				if (status == PLAYING && raopcl_accept_frames(raopcl))
+				{
+					n = read(infile, buf, DEFAULT_FRAMES_PER_CHUNK * 4);
+					if (!n)
+						continue;
+
+					raopcl_send_chunk(raopcl, buf, n / 4, &playtime);
+					frames += n / 4;
+				}
+				else
+				{
+					// prevent full cpu usage if we're waiting on data
+					usleep(1000);
+				}
+			}
+			break;
+		case 2:
+			LOG_INFO("Using AirPlay version 2");
+			// create the airplay context
+			if ((airplaycl = airplaycl_create(glHost, 0, 0, glDACPid, activeRemote, userAgent, alac ? RAOP_ALAC : RAOP_ALAC_RAW, 
+										DEFAULT_FRAMES_PER_CHUNK,
+										latency, crypto, auth, secret, password, et, md,
+										44100, 16, 2,
+										volume > 0 ? raopcl_float_volume(volume) : -144.0)) == NULL)
+			{
+				LOG_ERROR("Cannot init AirPlay %p", airplaycl);
+				close_platform();
+				exit(1);
+			}
+
+			// connect to player
+			LOG_INFO("Connecting to player: %s (%s:%hu)", player.udn ? player.udn : player.hostname, inet_ntoa(player.addr), player.port);
+			if (!airplaycl_connect(airplaycl, player.addr, player.port, volume > 0))
+			{
+				LOG_ERROR("Cannot connect to AirPlay device %s:%hu, check firewall & port", inet_ntoa(player.addr), player.port);
+				goto exit;
+			}
+
+			// latency = raopcl_latency(raopcl);
+
+			// LOG_INFO("connected to %s on port %d, player latency is %d ms", inet_ntoa(player.addr),
+			// 		player.port, (int)TS2MS(latency, raopcl_sample_rate(raopcl)));
+
+			// if (start || wait)
+			// {
+			// 	uint64_t now = raopcl_get_ntp(NULL);
+
+			// 	start_at = (start ? start : now) + MS2NTP(wait) -
+			// 			TS2NTP(latency, raopcl_sample_rate(raopcl));
+
+			// 	LOG_INFO("now %u.%u, audio starts at NTP %u.%u (in %u ms)", RAOP_SECNTP(now), RAOP_SECNTP(start_at),
+			// 			(start_at + TS2NTP(latency, raopcl_sample_rate(raopcl)) > now) ? (uint32_t)NTP2MS(start_at - now + TS2NTP(latency, raopcl_sample_rate(raopcl))) : 0);
+
+			// 	raopcl_start_at(raopcl, start_at);
+			// }
+			break;
+		default:
+			LOG_ERROR("Invalid AirPlay version %d, must be 1 or 2", ap_version);
+			goto exit;
+
 	}
 	LOG_INFO("end of stream reached");
 
 	glMainRunning = false;
-	free(buf);
-	raopcl_disconnect(raopcl);
+	if (buf) free(buf);
+	if (ap_version == 1)
+		raopcl_disconnect(raopcl);
+	else if (ap_version == 2)
+		raopcl_disconnect(raopcl);
 	pthread_join(glCmdPipeReaderThread, NULL);
 	goto exit;
 
@@ -613,7 +703,10 @@ exit:
 	LOG_INFO("exiting...");
 	close(cmdPipeFd);
 	unlink(cmdPipeName);
-	raopcl_destroy(raopcl);
+	if (ap_version == 1)
+		raopcl_destroy(raopcl);
+	else if (ap_version == 2)
+		raopcl_destroy(raopcl);
 	close_platform();
 	return 0;
 }
