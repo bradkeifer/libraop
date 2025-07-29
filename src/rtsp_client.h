@@ -10,6 +10,7 @@
  
  #ifndef __RTSP_CLIENT_H
 #define __RTSP_CLIENT_H
+#include <plist/plist.h>	// Required for AirPlay2 message handlers
 
 typedef struct sock_info_s {
 	int fd;
@@ -45,5 +46,18 @@ bool rtspcl_remove_all_exthds(struct rtspcl_s *p);
 bool rtspcl_add_exthds(struct rtspcl_s *p, char *key, char *data);
 bool rtspcl_mark_del_exthds(struct rtspcl_s *p, char *key);
 char* rtspcl_local_ip(struct rtspcl_s *p);
+
+// AirPlay2 versions
+
+// Get information from the AirPlay device using GET /all.
+// The plist obtained with the information is returned in rplist
+// The caller is responsible for calling plist_free when finished with 
+// the plist data
+// @param p pointer to the RTSP client handle
+// @param rplist - if not NULL, the plist will be stored here
+// @param rplen - the length of the returned plist will be stored here. Must be non-NUll if rplist is not NULL.
+// @returns - true on success, false otherwise
+bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen);		
+bool rtspcl_setup_session(struct rtspcl_s *p, key_data_t *kd);
 
 #endif

@@ -61,24 +61,11 @@
 */
 
 #include "platform.h"
+#include "common.h"
 
-#define DEFAULT_FRAMES_PER_CHUNK 352
-#define MAX_FRAMES_PER_CHUNK 4096 // must match alac_wrapper.h ALAC_MAX_FRAMES
 #define RAOP_LATENCY_MIN 11025
-#define SECRET_SIZE	64
 
-typedef struct ntp_s {
-	uint32_t seconds;
-	uint32_t fraction;
-} ntp_t;
-
-#define NTP2MS(ntp) ((((ntp) >> 10) * 1000L) >> 22)
-#define MS2NTP(ms) (((((uint64_t) (ms)) << 22) / 1000) << 10)
-#define TIME_MS2NTP(time) raopcl_time32_to_ntp(time)
-#define NTP2TS(ntp, rate) ((((ntp) >> 16) * (rate)) >> 16)
-#define TS2NTP(ts, rate)  (((((uint64_t) (ts)) << 16) / (rate)) << 16)
-#define MS2TS(ms, rate) ((((uint64_t) (ms)) * (rate)) / 1000)
-#define TS2MS(ts, rate) NTP2MS(TS2NTP(ts,rate))
+// #define TIME_MS2NTP(time) raopcl_time32_to_ntp(time)
 
 typedef struct raopcl_t {uint32_t dummy;} raopcl_t;
 
@@ -98,25 +85,6 @@ typedef struct {
 	raop_codec_t codec;
 	raop_crypto_t crypto;
 } raop_settings_t;
-
-typedef struct {
-	uint8_t proto;
-	uint8_t type;
-	uint8_t seq[2];
-} __attribute__ ((packed)) rtp_header_t;
-
-typedef struct {
-	rtp_header_t hdr;
-	uint32_t 	rtp_timestamp_latency;
-	ntp_t   curr_time;
-	uint32_t   rtp_timestamp;
-} __attribute__ ((packed)) rtp_sync_pkt_t;
-
-typedef struct {
-	rtp_header_t hdr;
-	uint32_t timestamp;
-	uint32_t ssrc;
-} __attribute__ ((packed)) rtp_audio_pkt_t;
 
 uint64_t raopcl_get_ntp(struct ntp_s* ntp);
 
@@ -166,10 +134,5 @@ bool 	raopcl_is_playing(struct raopcl_s *p);
 bool 	raopcl_sanitize(struct raopcl_s *p);
 
 uint64_t 	raopcl_time32_to_ntp(uint32_t time);
-
-struct mdnssd_handle_s;
-
-bool AppleTVpairing(struct mdnssd_handle_s* mDNShandle, char** pUDN, char** pSecret);
-bool AirPlayPassword(struct mdnssd_handle_s* mDNShandle, bool (*excluded)(char* model, char* name), char** UDN, char** passwd);
 
 #endif

@@ -12,6 +12,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <openssl/rand.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #ifdef USE_CURVE25519
 #include "ed25519_signature.h"
@@ -20,6 +22,8 @@
 #include <openssl/sha.h>
 #include <openssl/md5.h>
 #endif
+
+#include <plist/plist.h>	// Required for AirPlay2 message handlers
 
 #include "platform.h"
 
@@ -50,13 +54,18 @@ typedef struct rtspcl_s {
 	} digest;
 } rtspcl_t;
 
-extern log_level 	raop_loglevel;
-static log_level	*loglevel = &raop_loglevel;
+// extern log_level 	raop_loglevel;
+// static log_level	*loglevel = &raop_loglevel;
+
+// Seems to be a bug here
+extern log_level 	main_log;
+static log_level 	*loglevel = &main_log;
 
 static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 char *content, int length, int get_response, key_data_t *hds,
 			 key_data_t *kd, char **resp_content, int *resp_len,
 			 char* url);
+
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -95,6 +104,9 @@ bool rtspcl_is_sane(struct rtspcl_s *p) {
 }
 
 /*----------------------------------------------------------------------------*/
+// Open a TCP socket and connect to the RTSP server
+// Establishes RTSP url in p->url
+// Returns true on success, false on failure
 bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr host, uint16_t destport, char *sid) {
 	if (!p) return false;
 
@@ -556,8 +568,8 @@ bool rtspcl_teardown(struct rtspcl_s *p) {
 }
 
 /*
- * send RTSP request, and get responce if it's needed
- * if this gets a success, *kd is allocated or reallocated (if *kd is not NULL)
+ * send RTSP request, and get response if it's needed
+ * if this gets a success, *rkd is allocated or reallocated (if *kd is not NULL)
  */
 static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
 				char *content, int length, int get_response, key_data_t *hds,
@@ -715,7 +727,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 			LOG_ERROR("[%p]: content length receive error %p %d", rtspcld, data, size);
 		}
 
-		LOG_INFO("[%p]: Body data len %d", rtspcld, clen, data);
 		if (*loglevel >= lDEBUG) logdump(data, clen);
 
 		if (resp_content) {
@@ -728,4 +739,43 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	if (!rkd) kd_free(pkd);
 
 	return true;
+}
+
+// AirPlay2 specific RTSP handlers
+
+bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
+	char *resp_content;
+	int resp_len = 0;
+	plist_t pinfo = NULL;
+
+	if (!p) return false;
+
+	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, NULL, (char **) &resp_content, &resp_len, NULL)) {
+		LOG_ERROR("exec request failed. Response length =%d", resp_len);
+		goto erexit;
+	}
+	LOG_DEBUG("response of length %d is %sbinary\n", 
+		resp_len, plist_is_binary(resp_content, resp_len) ? "" : "not ");
+
+	plist_from_bin(resp_content, resp_len, &pinfo);
+
+	if (!pinfo) {
+		LOG_ERROR("Unable to extract plist from GET /info response.\n");
+		goto erexit;
+	}
+	LOG_DEBUG("Extracted plist, length %d, from GET /info response.\n", resp_len);
+	*rplist = pinfo;
+	*rplen = resp_len;
+	free(resp_content);
+	return true;
+
+  erexit:
+	free(resp_content);
+	plist_free(pinfo);
+	return false;
+}
+
+/*----------------------------------------------------------------------------*/
+bool rtspcl_setup_session(struct rtspcl_s *p, key_data_t *rkd) {
+	return false;
 }
