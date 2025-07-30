@@ -27,46 +27,6 @@
 
 #define AIRPLAY_LATENCY_MIN 11025
 
-// AirPlay2 
-#define AIRPLAY_PINFO_FIRMWARE_VERSION		"firmwareRevision"
-#define AIRPLAY_PINFO_MANUFACTURER			"manufacturer"
-#define AIRPLAY_PINFO_KEEPALIVE_LOW_POWER	"keepAliiveLowPower"
-#define AIRPLAY_PINFO_FIRMWARE_BUILD_DATE	"firmwareBuildDate"
-#define AIRPLAY_PINFO_MODEL							"model"
-#define AIRPLAY_PINFO_NAME_IS_FACTORY_DEFAULT		"nameIsFactoryDefault"
-#define AIRPLAY_PINFO_HARDWARE_VERSION				"hardwareRevision"
-#define AIRPLAY_PINFO_KEEPALIVE_SEND_STATS_AS_BODY	"keepAliveSendStatsAsBody"
-#define AIRPLAY_PINFO_STATUS_FLAGS					"statusFlags"
-#define AIRPLAY_PINFO_DEVICE_ID						"deviceID"
-#define AIRPLAY_PINFO_BUILD							"build"
-#define AIRPLAY_PINFO_PROTOCOL_VERSION				"protocolVersion"
-#define AIRPLAY_PINFO_SOURCE_VERSION				"sourceVersion"
-#define AIRPLAY_PINFO_FEATURES						"features"
-#define AIRPLAY_PINFO_NAME							"name"
-
-// From https://openairplay.github.io/airplay-spec/status_flags.html
-enum airplay_status_flags
-{
-  AIRPLAY_FLAG_PROBLEM_DETECTED               = (1 << 0),
-  AIRPLAY_FLAG_NOT_CONFIGURED                 = (1 << 1),
-  AIRPLAY_FLAG_AUDIO_CABLE_ATTACHED           = (1 << 2),
-  AIRPLAY_FLAG_PIN_REQUIRED                   = (1 << 3),
-  AIRPLAY_FLAG_SUPPORTS_FROM_CLOUD            = (1 << 6),
-  AIRPLAY_FLAG_PASSWORD_REQUIRED              = (1 << 7),
-  AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED      = (1 << 9),
-  AIRPLAY_FLAG_SETUP_HK_ACCESS_CTRL           = (1 << 10),
-  AIRPLAY_FLAG_SUPPORTS_RELAY                 = (1 << 11),
-  AIRPLAY_FLAG_SILENT_PRIMARY                 = (1 << 12),
-  AIRPLAY_FLAG_TIGHT_SYNC_IS_GRP_LEADER       = (1 << 13),
-  AIRPLAY_FLAG_TIGHT_SYNC_BUDDY_NOT_REACHABLE = (1 << 14),
-  AIRPLAY_FLAG_IS_APPLE_MUSIC_SUBSCRIBER      = (1 << 15),
-  AIRPLAY_FLAG_CLOUD_LIBRARY_ON               = (1 << 16),
-  AIRPLAY_FLAG_RECEIVER_IS_BUSY               = (1 << 17),
-};
-
-#define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
-#define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
-
 typedef struct airplaycl_t {uint32_t dummy;} airplaycl_t;
 
 struct airplaycl_s;
@@ -129,6 +89,7 @@ bool 	airplaycl_is_sane(struct airplaycl_s *p);
 bool 	airplaycl_is_connected(struct airplaycl_s *p);
 bool 	airplaycl_is_playing(struct airplaycl_s *p);
 bool 	airplaycl_sanitize(struct airplaycl_s *p);
+bool 	airplaycl_assess_features(struct airplaycl_s *p);
 
 uint64_t 	airplaycl_time32_to_ntp(uint32_t time);
 uint64_t airplaycl_get_ntp(struct ntp_s* ntp);

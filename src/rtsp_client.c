@@ -747,6 +747,11 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 // AirPlay2 specific RTSP handlers
 
+// Requests GET /info from the Airplay device and returns the plist received.
+// @param p the RTSP client handle
+// @param rplist the plist received from the AirrPlay device
+// @param rplen the length of the plist received from the AirPlay device
+// @returns true on success, false on failure
 bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 	char *resp_content;
 	int resp_len = 0;
@@ -777,6 +782,17 @@ bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 }
 
 /*----------------------------------------------------------------------------*/
-bool rtspcl_setup_session(struct rtspcl_s *p, key_data_t *rkd) {
+// Handles the SETUP SESSION request/response with the AirPlay2 device
+// @param p the RTSP client handle
+// @param req_bplist the binary plist to send to the AirPlay2 device
+// @param req_bplist_len the length of the plist to send to the AirPlay2 device
+// @param resp_plist a pointer to the plist received in the response from the AirPlay2 device
+// @param resp_plist_len a pointer to the length of the plist received in the response from the AirPlay2 device
+// @returns true on RTSP success, false on failure. Note that the caller must analyse the 
+// 		plist received from the AirPlay2 device to determine ultimate success 
+bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
+	char *req_bplist, uint32_t req_bplist_len,
+	plist_t *resp_bplist, uint32_t *resp_plist_len) {
+
 	return false;
 }
