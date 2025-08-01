@@ -808,9 +808,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 // Requests GET /info from the Airplay device and returns the plist received.
 // @param p the RTSP client handle
-// @param rplist the plist received from the AirPlay device
-// @param rplen the length of the plist received from the AirPlay device
+// @param resp the RTSP response from the AirPlay device.  Memory is allocation as required.
 // @returns true on success, false on failure
+// @note It is the responsibility of the caller to free the memory allocated for the response data
 bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
 	char *resp_content;
 	int resp_len = 0;
@@ -868,6 +868,20 @@ bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 
 	return false;
 }
+
+// Handle pairing requests of various forms
+// @param p the RTSP client handle
+// @param cmd the method command to be sent as the request
+// @param hdrs request specific headers for inclusion after the generic headers
+// @param body the request body
+// @param resp the rtsp response data is returned to the caller via this parameter. Memory is allocation as required.
+// @returns true on success, false on failure
+// @note It is the responsibility of the caller to free the memory allocated for the response data
+bool rtspcl_pair_request(struct rtspcl_s *p, char *cmd, rtsp_headers_t *hdrs, rtsp_body_t *body, rtsp_response_t *resp) {
+	// TODO - more work to do here
+	return false;
+}
+
 
 // // Clears the RTSP response data from the RTSP client handle
 // // @param response pointer to the RTSP response handle

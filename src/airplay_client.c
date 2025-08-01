@@ -42,8 +42,6 @@
 #include "aes.h"
 #include "pair.h"
 
-#define AIRPLAY_MAX_RTSP_PAYLOAD	256		// Maximum size of message payload supported by this implementation
-
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
 #define AIRPLAY_PLIST_MANUFACTURER					"manufacturer"
@@ -164,11 +162,6 @@ enum airplay_status_flags
 #define AIRPLAY_MSEC(ntp)  ((uint32_t) ((((ntp) >> 16)*1000) >> 16))
 
 /* -------------------- MISC GLOBALS derived from owntone ------------------------------ */
-
-typedef struct rtsp_payload {
-	char mem[AIRPLAY_MAX_RTSP_PAYLOAD];
-	size_t length;
-} rtsp_payload_t;
 
 // @todo Copied from owntones codebase - not sure if this is required for us
 #if AIRPLAY_USE_AUTH_SETUP
@@ -371,7 +364,8 @@ typedef struct airplaycl_s {
 	uint64_t features; // Added for AirPlay2
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
-	rtsp_payload_t rtsp_request_payload;
+	rtsp_headers_t rtsp_request_headers;
+	rtsp_body_t rtsp_request_payload;
 
 	/* Pairing, see pair.h  - Added for AirPlay2 */
 
@@ -402,8 +396,11 @@ static const char* airplay_seq_type_str(enum airplay_seq_type seq);
 static const char* airplay_state_str(enum airplay_state state);
 static const char* airplay_pair_type_str(enum pair_type pair_type);
 
-static bool airplay_payload_clean(struct airplaycl_s *p);
-static bool airplay_payload_add(struct airplaycl_s *p, const void *data, size_t data_len);
+static bool airplay_headers_clean(struct airplaycl_s *p);
+static bool airplay_headers_add(struct airplaycl_s *p, const char *data);
+static char *airplay_headers_get(struct airplaycl_s *p);
+static bool airplay_body_clean(struct airplaycl_s *p);
+static bool airplay_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -656,32 +653,98 @@ static const char* airplay_pair_type_str(enum pair_type pair_type) {
 	}
 }
 
+// Clean/reset the RTSP request Headers buffer
+// @param p the AirPlay client handle
+// @returns true on success, false on failure
+static bool airplay_headers_clean(struct airplaycl_s *p) {
+	if (!p) {
+		LOG_ERROR("Invalid Airplay client handle");
+		return false;
+	}
+	p->rtsp_request_headers.length = 0;
+	p->rtsp_request_headers.headers[0] = 0;
+	LOG_DEBUG("RTSP request Headers cleaned %s, length %d",
+		p->rtsp_request_headers.headers,
+		p->rtsp_request_headers.length);
+	return true;
+}
+
+// Add data to the RTSP request Headers buffer
+// @param p the AirPlay client handle
+// @param data pointer to the data to be added
+// @returns true on success, false on failure
+// @note A <CR><LF> will be automatically added to the end of each Header record
+static bool airplay_headers_add(struct airplaycl_s *p, const char *data) {
+	int i = 0;
+	char *buf = NULL;
+	if (!p || !data || strlen(data) == 0 || strlen(data) > RTSP_MAX_HEADER) {
+		LOG_ERROR("Invalid paramaters");
+		return false;
+	}
+
+	asprintf(&buf, "%s", data);
+
+	// strip any trailing <CR> or <LF> from data before adding it
+	i = strlen(buf);
+	i--;
+	while(i >= 0 && isspace(buf[i])) {
+		LOG_DEBUG("Stripping trailing character 0x%.2x from position %d", buf[i], i);
+		i--;
+	}
+	buf[i + 1] = '\0';
+
+	i = strlen(buf);
+
+	if ((p->rtsp_request_headers.length + i + 2) > RTSP_MAX_HEADER) {
+		LOG_ERROR("Data add would cause RTSP Header Overflow %d + %d + 2 > %d",
+			p->rtsp_request_headers.length, i, RTSP_MAX_HEADER);
+	}
+	strncat(p->rtsp_request_headers.headers, buf, i);
+	strncat(p->rtsp_request_headers.headers, "\r\n", 2);
+	p->rtsp_request_headers.length += (i + 2);
+	free(buf);
+	return true;
+}
+
+// Return the RTSP Haaders as a character string
+// @param p the AirPlay client handle
+// @returns the RTSP Headers, inclusive of trailing <CR><LF>'s
+static char *airplay_headers_get(struct airplaycl_s *p) {
+	if (!p) return (char *)NULL;
+	return p->rtsp_request_headers.headers;
+}
+
 // Clean/reset the RTSP request payload buffer
 // @param p the AirPlay client handle
 // @returns true on success, false on failure
-static bool airplay_payload_clean(struct airplaycl_s *p) {
+static bool airplay_body_clean(struct airplaycl_s *p) {
 	if (!p) {
 		LOG_ERROR("Invalid Airplay client handle");
 		return false;
 	}
 	p->rtsp_request_payload.length = 0;
-	memset(p->rtsp_request_payload.mem, 0, AIRPLAY_MAX_RTSP_PAYLOAD);
+	memset(p->rtsp_request_payload.mem, 0, RTSP_MAX_BODY);
 	LOG_DEBUG("RTSP request payload cleaned %c, length %d",
 		p->rtsp_request_payload.mem[0],
 		p->rtsp_request_payload.length);
 	return true;
 }
 
-static bool airplay_payload_add(struct airplaycl_s *p, const void *data, size_t data_len) {
+// Add data to the RTSP request payload buffer
+// @param p the AirPlay client handle
+// @param data pointer to the data to be added
+// @param data_len the length of data to be added
+// @returns true on success, false on failure
+static bool airplay_body_add(struct airplaycl_s *p, const void *data, size_t data_len) {
 	if (!p || !data || data_len == 0) {
 		LOG_ERROR("Invalid paramaters");
 		return false;
 	}
 	LOG_DEBUG("Adding %d bytes to existing payload of length %d", 
 		data_len, p->rtsp_request_payload.length);
-	if ((p->rtsp_request_payload.length + data_len) > AIRPLAY_MAX_RTSP_PAYLOAD) {
+	if ((p->rtsp_request_payload.length + data_len) > RTSP_MAX_BODY) {
 		LOG_ERROR("Payload add would cause overflow. %d + %d > %d",
-			p->rtsp_request_payload.length, data_len, AIRPLAY_MAX_RTSP_PAYLOAD);
+			p->rtsp_request_payload.length, data_len, RTSP_MAX_BODY);
 		return false;
 	}
 	memcpy(&p->rtsp_request_payload.mem[p->rtsp_request_payload.length], data, data_len);
@@ -725,6 +788,13 @@ erexit:
 	return false;
 }
 
+// Generic handler for constructing RTSP pairing data
+// @param p the AirPlay client handle
+// @param step	the step number in the pairing sequence
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and PAyload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
 static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 {
 	uint8_t *body;
@@ -763,26 +833,28 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 		return -1;
 	}
 
-	LOG_INFO("TODO: Implement a method to update the RTSP output buffer with %s", body);
 	LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
 	hexdump("Output buffer\n", body, len);
 	LOG_DEBUG("errmsg is %s", errmsg);
-	airplay_payload_add(p, body, len);
-	//   evbuffer_add(req->output_buffer, body, len);
+	airplay_body_add(p, body, len);
 	free(body);
 
 	// Required!!
-	LOG_INFO("TODO: Handlers for PAIR_CLIENT_HOMEKIT_NORMAL and PAIR_CLIENT_HOMEKIT_TRANSIENT");
-	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_NORMAL");
-	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "3");
-	// else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_TRANSIENT");
-	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "4");
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+		airplay_headers_add(p, "X-Apple-HKP: 3");
+	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+		airplay_headers_add(p, "X-Apple-HKP: 4");
 
 	return 0;
 }
 
+// Handles pair-setup step 1
+// @param p the AirPlay client handle
+// @param arg the PIN to use for pairing
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and PAyload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
 static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
 {
 	const char *pin = arg;
@@ -797,6 +869,8 @@ static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
 
 	device_id_colon_parse(&device_id, p->device_id);
 	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
+	LOG_DEBUG("Calling pair_setup_new with pair-type %s, pin %s, device_id %016" PRIX64,
+		airplay_pair_type_str(p->pair_type), pin, device_id_hex);
 
 	p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
 	if (!p->pair_setup_ctx) {
@@ -1866,14 +1940,22 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	LOG_DEBUG("%s state = %s", p->name, airplay_state_str(p->state));
 	LOG_DEBUG("%s next_seq = %s", p->name, airplay_seq_type_str(p->next_seq));
 	// TODO <@bradkeifer> work out if to implement response_handler_info_start()
-	airplay_payload_clean(p);
+	airplay_headers_clean(p);
+	airplay_body_clean(p);
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
 
-		LOG_DEBUG("About to call payload_make_pair_setup1(p, 3939)");
-		int ret = payload_make_pair_setup1(p, "3939");
-		LOG_DEBUG("payload_make_pair_setup1 returned %d", ret);
+		airplay_headers_add(p, "Content-Type: application/octet-stream");
+		if (payload_make_pair_setup1(p, NULL) == -1) {
+			LOG_ERROR("Error constructing the RTSP pairing request");
+			goto erexit;
+		}
+		char *hbuf;
+		asprintf(&hbuf, "Content-Length: %" PRIu64 "", p->rtsp_request_payload.length);
+		airplay_headers_add(p, hbuf);
+		free(hbuf);
+		LOG_DEBUG("RTSP Headers are:\n%s", airplay_headers_get(p));
 	}
 
 	// RTSP pairing verify for AppleTV

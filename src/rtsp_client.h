@@ -26,9 +26,23 @@ typedef struct rtp_port_s {
 
 // Added for AirPlay2 support
 
+#define RTSP_MAX_BODY		1024	// Maximum size of RTSP message body supported by this implementation
+#define RTSP_MAX_HEADER		4096	// Maxmimum size of an RTP Header in bytes
+
 // Content-Types
 #define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
 #define AIRPLAY_CONTENT_TYPE_OCTET_STREAM		"application/octet-stream"
+
+
+typedef struct rtsp_headers {
+	char headers[RTSP_MAX_HEADER];
+	size_t length;
+} rtsp_headers_t;
+
+typedef struct rtsp_body {
+	char mem[RTSP_MAX_BODY];
+	size_t length;
+} rtsp_body_t;
 
 // This struct provides a means to expose RTSP response data to the airplay sequence handling logic
 typedef struct rtsp_response_s {
@@ -77,5 +91,6 @@ bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);
 bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 	char *req_bplist, uint32_t req_bplist_len,
 	plist_t *resp_bplist, uint32_t *resp_plist_len);
+bool rtspcl_pair_request(struct rtspcl_s *p, char *cmd, rtsp_headers_t *hdrs, rtsp_body_t *body, rtsp_response_t *resp);
 
 #endif
