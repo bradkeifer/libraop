@@ -380,10 +380,10 @@ static log_level 	*loglevel = &main_log;
 
 /*----------------------- Generic Helpers ---------------------------------*/
 
-// static int 	safe_hextou64(const char *str, uint64_t *val);
+static int 	safe_hextou64(const char *str, uint64_t *val);
 static void uuid_make(char *str);
 // static void device_id_colon_make(char *id_str, int size, uint64_t id);
-// static int 	device_id_colon_parse(uint64_t *id, const char *id_str);
+static int 	device_id_colon_parse(uint64_t *id, const char *id_str);
 
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
@@ -391,11 +391,16 @@ static const char* airplay_seq_type_str(enum airplay_seq_type seq);
 static const char* airplay_state_str(enum airplay_state state);
 static const char* airplay_pair_type_str(enum pair_type pair_type);
 
+/* ----------------------- Pairing Helpers --------------------------------*/
+
+static int payload_make_pair_generic(struct airplaycl_s *p, int step);
+static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg);
+
 /*----------------------- RTSP Session Management --------------------------*/
 
-// static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
-// static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
-// static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
 
 static bool airplay_session_sequence_start(struct airplaycl_s *p);
 
@@ -419,38 +424,38 @@ static bool _airplaycl_disconnect(struct airplaycl_s *p, bool force);
 // @param str the hex string to be converted
 // @param val pointer to where the converted value will be returned
 // @returns 0 on success, -1 on failure
-// static int safe_hextou64(const char *str, uint64_t *val)
-// {
-// 	char *end;
-// 	unsigned long long intval;
+static int safe_hextou64(const char *str, uint64_t *val)
+{
+	char *end;
+	unsigned long long intval;
 
-// 	if (str == NULL) {
-// 		LOG_DEBUG("Input to safe_hextou64 is NULL\n");
-// 		return -1;
-// 	}
+	if (str == NULL) {
+		LOG_DEBUG("Input to safe_hextou64 is NULL\n");
+		return -1;
+	}
 
-// 	errno = 0;
-// 	intval = strtoull(str, &end, 16);
+	errno = 0;
+	intval = strtoull(str, &end, 16);
 
-// 	if (((errno == ERANGE) && (intval == ULLONG_MAX)) || ((errno != 0) && (intval == 0))) {
-// 		LOG_DEBUG("Invalid u64 in string (%s): %s\n", str, strerror(errno));
-// 		return -1;
-// 	}
+	if (((errno == ERANGE) && (intval == ULLONG_MAX)) || ((errno != 0) && (intval == 0))) {
+		LOG_DEBUG("Invalid u64 in string (%s): %s\n", str, strerror(errno));
+		return -1;
+	}
 
-// 	if (end == str) {
-// 		LOG_DEBUG("No u64 found in string (%s)\n", str);
-// 		return -1;
-// 	}
+	if (end == str) {
+		LOG_DEBUG("No u64 found in string (%s)\n", str);
+		return -1;
+	}
 
-// 	if (intval > UINT64_MAX) {
-// 		LOG_DEBUG("u64 value out of range (%s)\n", str);
-// 		return -1;
-// 	}
+	if (intval > UINT64_MAX) {
+		LOG_DEBUG("u64 value out of range (%s)\n", str);
+		return -1;
+	}
 
-// 	*val = (uint64_t)intval;
+	*val = (uint64_t)intval;
 
-// 	return 0;
-// }
+	return 0;
+}
 
 // Create a uuid
 // @param str a pointer to the UUID that will be created
@@ -484,26 +489,26 @@ static void uuid_make(char *str)
 // Converts AA:BB:CC:DD:EE:FF -> AABBCCDDEEFF -> uint64 id
 // @param id pointer to the "decolonised" device_id
 // @paramv id_str the device id to be "decolonised"
-// static int device_id_colon_parse(uint64_t *id, const char *id_str)
-// {
-// 	char *s;
-// 	char *ptr;
-// 	int ret;
+static int device_id_colon_parse(uint64_t *id, const char *id_str)
+{
+	char *s;
+	char *ptr;
+	int ret;
 
-// 	s = calloc(1, strlen(id_str) + 1);
+	s = calloc(1, strlen(id_str) + 1);
 
-// 	for (ptr = s; *id_str != '\0'; id_str++) {
-// 		if (*id_str == ':') continue;
+	for (ptr = s; *id_str != '\0'; id_str++) {
+		if (*id_str == ':') continue;
 
-// 		*ptr = *id_str;
-// 		ptr++;
-// 	}
+		*ptr = *id_str;
+		ptr++;
+	}
 
-// 	ret = safe_hextou64(s, id);
-// 	free(s);
+	ret = safe_hextou64(s, id);
+	free(s);
 
-// 	return ret;
-// }
+	return ret;
+}
 
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
@@ -634,172 +639,171 @@ erexit:
 	return false;
 }
 
-//payload_make_pair_generic(int step, struct evrtsp_request *req, struct airplay_session *rs
-// static int payload_make_pair_generic(struct airplaycl_s *p, int step)
-// {
-// 	uint8_t *body;
-// 	// size_t len;
-// 	const char *errmsg;
+static int payload_make_pair_generic(struct airplaycl_s *p, int step)
+{
+	uint8_t *body;
+	size_t len;
+	const char *errmsg;
 
 
-// 	switch (step) {
-// 		case 1:
-// 			LOG_ERROR("pair_setup_request1 and pair_setup_errmsg not yet implemented");
-// 			// body    = pair_setup_request1(&len, p->pair_setup_ctx);
-// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-// 			break;
-// 			//   case 2:
-// 			// body    = pair_setup_request2(&len, p->pair_setup_ctx);
-// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-// 			// break;
-// 			//   case 3:
-// 			// body    = pair_setup_request3(&len, p->pair_setup_ctx);
-// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-// 			// break;
-// 			//   case 4:
-// 			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
-// 			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
-// 			// break;
-// 			//   case 5:
-// 			// body    = pair_verify_request2(&len, p->pair_verify_ctx);
-// 			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
-// 			// break;
-// 		default:
-// 			body    = NULL;
-// 			errmsg  = "Bug! Bad step number";
-// 	}
+	switch (step) {
+		case 1:
+			body    = pair_setup_request1(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+			//   case 2:
+			// body    = pair_setup_request2(&len, p->pair_setup_ctx);
+			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			// break;
+			//   case 3:
+			// body    = pair_setup_request3(&len, p->pair_setup_ctx);
+			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			// break;
+			//   case 4:
+			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
+			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+			// break;
+			//   case 5:
+			// body    = pair_verify_request2(&len, p->pair_verify_ctx);
+			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+			// break;
+		default:
+			body    = NULL;
+			errmsg  = "Bug! Bad step number";
+	}
 
-// 	if (!body) {
-// 		LOG_ERROR("Verification step %d request error: %s", step, errmsg);
-// 		return -1;
-// 	}
+	if (!body) {
+		LOG_ERROR("Verification step %d request error: %s", step, errmsg);
+		return -1;
+	}
 
-// 	LOG_INFO("TODO: Implement a method to update the RTSP output buffer with %s", body);
-// 	//   evbuffer_add(req->output_buffer, body, len);
-// 	free(body);
+	LOG_INFO("TODO: Implement a method to update the RTSP output buffer with %s", body);
+	//   evbuffer_add(req->output_buffer, body, len);
+	free(body);
 
-// 	// Required!!
-// 	LOG_INFO("TODO: Handlers for PAIR_CLIENT_HOMEKIT_NORMAL and PAIR_CLIENT_HOMEKIT_TRANSIENT");
-// 	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-// 	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_NORMAL");
-// 	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "3");
-// 	// else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-// 	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_TRANSIENT");
-// 	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "4");
+	// Required!!
+	LOG_INFO("TODO: Handlers for PAIR_CLIENT_HOMEKIT_NORMAL and PAIR_CLIENT_HOMEKIT_TRANSIENT");
+	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_NORMAL");
+	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "3");
+	// else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_TRANSIENT");
+	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "4");
 
-// 	return 0;
-// }
+	return 0;
+}
 
-// static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
-// {
-// 	const char *pin = arg;
-// 	uint64_t device_id;
-// 	char device_id_hex[16 + 1];
+static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
+{
+	const char *pin = arg;
+	uint64_t device_id = 0;
+	char device_id_hex[16 + 1];
 
-// 	if (!pin && p->passwd[0])
-// 		pin = &p->passwd[0]; // For password based authentication
+	if (!pin && p->passwd[0])
+		pin = &p->passwd[0]; // For password based authentication
 
-// 	if (pin)
-// 		LOG_INFO("TODO: Handler for PIN or Password");
-// 		// p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+	if (pin)
+		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
 
-// 	device_id_colon_parse(&device_id, p->device_id);
-// 	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
+	device_id_colon_parse(&device_id, p->device_id);
+	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
 
-// 	LOG_INFO("TODO: Implement entry into pair_ap library");
-// 	// p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
-// 	// if (!p->pair_setup_ctx) {
-// 	// 	LOG_ERROR("Out of memory for verification setup context");
-// 	// 	return -1;
-// 	// }
+	LOG_INFO("TODO: Implement entry into pair_ap library");
+	p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
+	if (!p->pair_setup_ctx) {
+		LOG_ERROR("Out of memory for verification setup context");
+		return -1;
+	}
 
-// 	p->state = AIRPLAY_STATE_AUTH;
+	p->state = AIRPLAY_STATE_AUTH;
 
-// 	return payload_make_pair_generic(p, 1);
-// }
+	return payload_make_pair_generic(p, 1);
+}
 
-// static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
-// {
-//   enum airplay_seq_type seq_type;
+// Maybe implement this to replace logic coded in airplaycl_connect()??
+static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
+{
+  enum airplay_seq_type seq_type;
 
 //   seq_type = response_handler_info_generic(p);
-//   if (seq_type != AIRPLAY_SEQ_ABORT && seq_type != AIRPLAY_SEQ_PIN_START)
-// 	LOG_INFO("TODO: Check whether we need to add a next_seq to the airplaycl_s structure");
-//     // p->next_seq = AIRPLAY_SEQ_START_PLAYBACK; // Pair and then run SEQ_START_PLAYBACK which sets up the playback
+  seq_type = AIRPLAY_SEQ_ABORT;
+  if (seq_type != AIRPLAY_SEQ_ABORT && seq_type != AIRPLAY_SEQ_PIN_START)
+	LOG_INFO("TODO: Check whether we need to add a next_seq to the airplaycl_s structure");
+    // p->next_seq = AIRPLAY_SEQ_START_PLAYBACK; // Pair and then run SEQ_START_PLAYBACK which sets up the playback
 
-//   return seq_type;
-// }
+  return seq_type;
+}
 
-// static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
-// {
-// 	// uint8_t *response;
-// 	const char *errmsg;
-// 	// size_t len;
-// 	int ret;
+static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
+{
+	// uint8_t *response;
+	const char *errmsg;
+	// size_t len;
+	int ret;
 
-// 	LOG_INFO("TODO: Get the response data");
-// 	// response = evbuffer_pullup(req->input_buffer, -1);
-// 	// len = evbuffer_get_length(req->input_buffer);
+	LOG_INFO("TODO: Get the response data");
+	// response = evbuffer_pullup(req->input_buffer, -1);
+	// len = evbuffer_get_length(req->input_buffer);
 
-// 	switch (step) {
-// 		case 1:
-// 			LOG_INFO("TODO: Build handler connection to pair_ap library");
-// 			ret = 1;
-// 			errmsg = "Not yet implemented";
-// 		// 	ret = pair_setup_response1(rs->pair_setup_ctx, response, len);
-// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
-// 			break;
-// 		// case 2:
-// 		// 	ret = pair_setup_response2(rs->pair_setup_ctx, response, len);
-// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
-// 		// 	break;
-// 		// case 3:
-// 		// 	ret = pair_setup_response3(rs->pair_setup_ctx, response, len);
-// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
-// 		// 	break;
-// 		// case 4:
-// 		// 	ret = pair_verify_response1(rs->pair_verify_ctx, response, len);
-// 		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
-// 		// 	break;
-// 		// case 5:
-// 		// 	ret = pair_verify_response2(rs->pair_verify_ctx, response, len);
-// 		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
-// 		// 	break;
-// 		default:
-// 			ret = -1;
-// 			errmsg = "Bug! Bad step number";
-// 	}
+	switch (step) {
+		case 1:
+			LOG_INFO("TODO: Build handler connection to pair_ap library");
+			ret = 1;
+			errmsg = "Not yet implemented";
+		// 	ret = pair_setup_response1(rs->pair_setup_ctx, response, len);
+		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+			break;
+		// case 2:
+		// 	ret = pair_setup_response2(rs->pair_setup_ctx, response, len);
+		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+		// 	break;
+		// case 3:
+		// 	ret = pair_setup_response3(rs->pair_setup_ctx, response, len);
+		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+		// 	break;
+		// case 4:
+		// 	ret = pair_verify_response1(rs->pair_verify_ctx, response, len);
+		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
+		// 	break;
+		// case 5:
+		// 	ret = pair_verify_response2(rs->pair_verify_ctx, response, len);
+		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
+		// 	break;
+		default:
+			ret = -1;
+			errmsg = "Bug! Bad step number";
+	}
 
-// 	if (ret < 0) {
-// 		LOG_ERROR("Pairing step %d response from '%s' error: %s", step, p->name, errmsg);
-// 		// DHEXDUMP(E_DBG, L_AIRPLAY, response, len, "Raw response");
-// 		return AIRPLAY_SEQ_ABORT;
-// 	}
+	if (ret < 0) {
+		LOG_ERROR("Pairing step %d response from '%s' error: %s", step, p->name, errmsg);
+		// DHEXDUMP(E_DBG, L_AIRPLAY, response, len, "Raw response");
+		return AIRPLAY_SEQ_ABORT;
+	}
 
-// 	return AIRPLAY_SEQ_CONTINUE;
-// }
+	return AIRPLAY_SEQ_CONTINUE;
+}
 
-// static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
-// {
-// 	// struct output_device *device;
+static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
+{
+	// struct output_device *device;
 
-// 	LOG_INFO("TODO: Check the RTSP response code to see if PIN is required. Assuming No for the moment");
-// 	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
-// 	// 	p->rtspcl->response_code == RTSP_CONNECTION_AUTH_REQUIRED) {
+	LOG_INFO("TODO: Check the RTSP response code to see if PIN is required. Assuming No for the moment");
+	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
+	// 	p->rtspcl->response_code == RTSP_CONNECTION_AUTH_REQUIRED) {
 
-// 	// 	// I suspect this deals with the case where the device is removed by owntones.
-// 	// 	// device = outputs_device_get(rs->device_id);
-// 	// 	// if (!device)
-// 	// 	// 	return AIRPLAY_SEQ_ABORT;
+	// 	// I suspect this deals with the case where the device is removed by owntones.
+	// 	// device = outputs_device_get(rs->device_id);
+	// 	// if (!device)
+	// 	// 	return AIRPLAY_SEQ_ABORT;
 
-// 	// 	device->requires_auth = 1; // FIXME might be reset by mdns announcement
-// 	// 	rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+	// 	device->requires_auth = 1; // FIXME might be reset by mdns announcement
+	// 	rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
 
-// 	// 	return AIRPLAY_SEQ_PIN_START;
-// 	// }
+	// 	return AIRPLAY_SEQ_PIN_START;
+	// }
 
-// 	return response_handler_pair_generic(1, p);
-// }
+	return response_handler_pair_generic(1, p);
+}
 
 /*----------------------------------------------------------------------------*/
 airplay_state_t airplaycl_state(struct airplaycl_s *p)
@@ -1772,6 +1776,15 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	LOG_DEBUG("%s pair_type = %s", p->name, airplay_pair_type_str(p->pair_type));
 	LOG_DEBUG("%s state = %s", p->name, airplay_state_str(p->state));
 	LOG_DEBUG("%s next_seq = %s", p->name, airplay_seq_type_str(p->next_seq));
+	// TODO <@bradkeifer> work out if to implement response_handler_info_start()
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
+		p->state == AIRPLAY_STATE_INFO &&
+		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
+
+		LOG_DEBUG("About to call payload_make_pair_setup1(p, 3939)");
+		int ret = payload_make_pair_setup1(p, "3939");
+		LOG_DEBUG("payload_make_pair_setup1 returned %d", ret);
+	}
 
 	// RTSP pairing verify for AppleTV
 	// if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
