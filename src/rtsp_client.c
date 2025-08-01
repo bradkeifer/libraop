@@ -31,15 +31,12 @@
 #include "cross_net.h"
 #include "cross_util.h"
 #include "cross_log.h"
-// #include "rtsp_common.h"
 #include "rtsp_client.h"
 
 #define PUBLIC_KEY_SIZE 32
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-
-#define MAX_KD 64
 
 typedef struct rtspcl_s {
     int fd;
@@ -869,31 +866,46 @@ bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 	return false;
 }
 
-// Handle pairing requests of various forms
+// Process a RTSP Request and update caller with details of the RTSP Response
 // @param p the RTSP client handle
-// @param cmd the method command to be sent as the request
-// @param hdrs request specific headers for inclusion after the generic headers
-// @param body the request body
-// @param resp the rtsp response data is returned to the caller via this parameter. Memory is allocation as required.
+// @param request the RTSP Request information
+// @param response the RTSP Response data is returned to the caller via this parameter. Memory is allocated as required.
 // @returns true on success, false on failure
 // @note It is the responsibility of the caller to free the memory allocated for the response data
-bool rtspcl_pair_request(struct rtspcl_s *p, char *cmd, rtsp_headers_t *hdrs, rtsp_body_t *body, rtsp_response_t *resp) {
-	// TODO - more work to do here
+bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response) {
+	char *resp_content;
+	int resp_len = 0;
+	// plist_t pinfo = NULL;
+	key_data_t rkd[MAX_KD] = { 0 };
+
+	// rtspcl_clear_response(response); // - this is the responsibility of the prior caller
+	if (!p) return false;
+
+	if (!exec_request(p, request->command, request->content_type, request->body.mem, request->body.length,
+		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
+		LOG_ERROR("exec request failed. Response length =%d", resp_len);
+		goto erexit;
+	}
+
+	rtspcl_process_header_response(p, rkd, response);
+
+erexit:
 	return false;
 }
 
 
-// // Clears the RTSP response data from the RTSP client handle
-// // @param response pointer to the RTSP response handle
+// Clears the RTSP response data from the RTSP client handle
+// @param response pointer to the RTSP response handle
+// @todo <@bradkeifer> - can we guard against a "double free" scenario?
 static void rtspcl_clear_response(rtsp_response_t *response) {
-	LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
-	LOG_DEBUG("response->content = %p, %s", response->content, response->content);
+	// LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
+	// LOG_DEBUG("response->content = %p, %c", response->content, *response->content);
 	response->rtsp_response = false;
 	response->status_code = 0;
 	response->description[0] = 0;
 	response->content_type[0] = 0;
 	response->length = 0;
-	if (response->content) free(response->content); // In case prior consumer did not free
+	if (response->content && *response->content) free(response->content); // In case prior consumer did not free
 	response->content = NULL;
 	return;
 }

@@ -12,6 +12,8 @@
 #define __RTSP_CLIENT_H
 #include <plist/plist.h>	// Required for AirPlay2 message handlers
 
+#define MAX_KD 64
+
 typedef struct sock_info_s {
 	int fd;
 	uint16_t lport;
@@ -27,7 +29,7 @@ typedef struct rtp_port_s {
 // Added for AirPlay2 support
 
 #define RTSP_MAX_BODY		1024	// Maximum size of RTSP message body supported by this implementation
-#define RTSP_MAX_HEADER		4096	// Maxmimum size of an RTP Header in bytes
+#define RTSP_MAX_KD_LENGTH	256		// The maximum length of either key or data string supported in the RTSP Header key data by this implementation
 
 // Content-Types
 #define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
@@ -35,14 +37,23 @@ typedef struct rtp_port_s {
 
 
 typedef struct rtsp_headers {
-	char headers[RTSP_MAX_HEADER];
-	size_t length;
+	key_data_t kd[MAX_KD];
+	size_t count;
 } rtsp_headers_t;
 
 typedef struct rtsp_body {
 	char mem[RTSP_MAX_BODY];
 	size_t length;
 } rtsp_body_t;
+
+// This struct provides a means for the AirPlay sequence handling logic to prepare RTSP Request
+// data and then expose this to the rtsp_client handling logic
+typedef struct rtsp_request_s {
+	char 			*command;				// The RTSP command
+	char 			*content_type;
+	rtsp_headers_t	headers;
+	rtsp_body_t		body;
+} rtsp_request_t;
 
 // This struct provides a means to expose RTSP response data to the airplay sequence handling logic
 typedef struct rtsp_response_s {
@@ -91,6 +102,6 @@ bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);
 bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 	char *req_bplist, uint32_t req_bplist_len,
 	plist_t *resp_bplist, uint32_t *resp_plist_len);
-bool rtspcl_pair_request(struct rtspcl_s *p, char *cmd, rtsp_headers_t *hdrs, rtsp_body_t *body, rtsp_response_t *resp);
+bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response);
 
 #endif
