@@ -8,9 +8,11 @@
  *
  */
  
- #ifndef __RTSP_CLIENT_H
+#ifndef __RTSP_CLIENT_H
 #define __RTSP_CLIENT_H
 #include <plist/plist.h>	// Required for AirPlay2 message handlers
+
+// #include "rtsp_common.h"
 
 typedef struct sock_info_s {
 	int fd;

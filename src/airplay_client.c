@@ -95,6 +95,27 @@ enum airplay_state {
   AIRPLAY_STATE_AUTH      = AIRPLAY_STATE_F_FAILED | 0x02,
 };
 
+enum airplay_seq_type
+{
+  AIRPLAY_SEQ_ABORT = -1,
+  AIRPLAY_SEQ_START,
+  AIRPLAY_SEQ_START_PLAYBACK,
+  AIRPLAY_SEQ_PROBE,
+  AIRPLAY_SEQ_FLUSH,
+  AIRPLAY_SEQ_STOP,
+  AIRPLAY_SEQ_FAILURE,
+  AIRPLAY_SEQ_PIN_START,
+  AIRPLAY_SEQ_SEND_VOLUME,
+  AIRPLAY_SEQ_SEND_TEXT,
+  AIRPLAY_SEQ_SEND_PROGRESS,
+  AIRPLAY_SEQ_SEND_ARTWORK,
+  AIRPLAY_SEQ_PAIR_SETUP,
+  AIRPLAY_SEQ_PAIR_VERIFY,
+  AIRPLAY_SEQ_PAIR_TRANSIENT,
+  AIRPLAY_SEQ_FEEDBACK,
+  AIRPLAY_SEQ_CONTINUE, // Must be last element
+};
+
 // From https://openairplay.github.io/airplay-spec/status_flags.html
 enum airplay_status_flags
 {
@@ -140,6 +161,7 @@ enum airplay_status_flags
 
 /* -------------------- MISC GLOBALS derived from owntone ------------------------------ */
 
+// @todo Copied from owntones codebase - not sure if this is required for us
 #if AIRPLAY_USE_AUTH_SETUP
 static const uint8_t airplay_auth_setup_pubkey[] =
   "\x59\x02\xed\xe9\x0d\x4e\xf2\xbd\x4c\xb6\x8a\x63\x30\x03\x82\x07"
@@ -152,7 +174,7 @@ static const uint8_t airplay_auth_setup_pubkey[] =
 //		It would be good to discuss this with the community and get some suggestions
 struct features_type_map
 {
-  uint32_t bit;
+  uint64_t bit;			// bug in owntone code here. owntone defined as uint32_t
   char *name;
   bool mandatory;		// The device must have this feature for us to stream to it
 };
@@ -167,18 +189,18 @@ static const struct features_type_map features_map[] =
     { 7, "SupportsAirPlayScreen" , false},
     { 9, "SupportsAirPlayAudio" , true},
     { 11, "AudioRedunant" , false},
-    { 14, "Authentication_4" , false}, // FairPlay authentication
-    { 15, "MetadataFeatures_0" , false}, // Send artwork image to receiver
-    { 16, "MetadataFeatures_1" , false}, // Send track progress status to receiver
-    { 17, "MetadataFeatures_2" , false}, // Send NowPlaying info via DAAP
-    { 18, "AudioFormats_0" , false}, // PCM
-    { 19, "AudioFormats_1" , false}, // Apple Lossless (ALAC)
-    { 20, "AudioFormats_2" , false}, // AAC
-    { 21, "AudioFormats_3" , false}, // AAC ELD (Enhanced Low Delay)
-    { 23, "Authentication_1" , false}, // RSA authentication (NA)
-    { 26, "Authentication_8" , false}, // 26 || 51, MFi authentication
+    { 14, "Authentication_4: FairPlay" , false}, // FairPlay authentication
+    { 15, "MetadataFeatures_0: Artwork" , false}, // Send artwork image to receiver
+    { 16, "MetadataFeatures_1: Track progress" , false}, // Send track progress status to receiver
+    { 17, "MetadataFeatures_2: NowPlaying via DAAP" , false}, // Send NowPlaying info via DAAP
+    { 18, "AudioFormats_0: PCM" , false}, // PCM
+    { 19, "AudioFormats_1: ALAC" , false}, // Apple Lossless (ALAC)
+    { 20, "AudioFormats_2: AAC" , false}, // AAC
+    { 21, "AudioFormats_3: AAC ELD" , false}, // AAC ELD (Enhanced Low Delay)
+    { 23, "Authentication_1: RSA" , false}, // RSA authentication (NA)
+    { 26, "Authentication_8: MFi" , false}, // 26 || 51, MFi authentication
     { 27, "SupportsLegacyPairing" , false},
-    { 30, "HasUnifiedAdvertiserInfo" , false},
+    { 30, "HasUnifiedAdvertiserInfo: ?RAOP?" , false}, // or is this RAOP is supported on this port? With this bit set you don't need the AirTunes service.
     { 32, "IsCarPlay" , false},
     { 32, "SupportsVolume" , false}, // !32
     { 33, "SupportsAirPlayVideoPlayQueue" , false},
@@ -193,7 +215,7 @@ static const struct features_type_map features_map[] =
     { 46, "SupportsHKPairingAndAccessControl" , false},
     { 48, "SupportsCoreUtilsPairingAndEncryption" , false}, // 38 || 46 || 43 || 48
     { 49, "SupportsAirPlayVideoV2" , false},
-    { 50, "MetadataFeatures_3" , false}, // Send NowPlaying info via bplist
+    { 50, "MetadataFeatures_3: NowPlayng via bplist" , false}, // Send NowPlaying info via bplist
     { 51, "SupportsUnifiedPairSetupAndMFi" , false},
     { 52, "SupportsSetPeersExtendedMessage" , false},
     { 54, "SupportsAPSync" , false},
@@ -204,9 +226,13 @@ static const struct features_type_map features_map[] =
     { 60, "SupportsAudioMediaDataControl" , false}, // 59 && 60 && !disableMediaDataControl
     { 61, "SupportsRFC2198Redundancy" , false},
   };
-#define AIRPLAY_FEATURE_SUPPORTS_AUDIO		(1 << 9)
+#define AIRPLAY_FEATURE_SUPPORTS_AUDIO							((uint64_t)1 << 9)
+#define AIRPLAY_FEATURE_SUPPORTS_HKPAIRINGANDACCESSCONTROL		((uint64_t)1 << 48)
+#define AIRPLAY_FEATURE_SUPPORTS_COREUTILSPAIRINGANDENCRYPTION	((uint64_t)1 << 48)
+#define AIRPLAY_FEATURE_SUPPORTS_UNIFIEDPAIRSETUPANDMFI 		((uint64_t)1 << 51)
 
-/*
+
+/* libraop stuff
  --- timestamps (ts), millisecond (ms) and network time protocol (ntp) ---
  NTP is starting Jan 1900 (EPOCH) made of 32 high bits (seconds) and 32
  low bits (fraction).
@@ -284,13 +310,8 @@ typedef struct {
 
 typedef struct airplaycl_s {
 	struct rtspcl_s *rtspcl;
-	airplay_state_t state;
-	char session_uuid[37];	// Added for AirPlay2
-	uint64_t status_flags;	// Added for AirPlay2 - double check they are required once implementation is working
+	airplay_state_t raop_state; // TODO <@bradkeifer> - seek to eliminate or homogenise with airplay_state
 	char DACP_id[17], active_remote[11];
-	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
-	char name[AIRPLAY_NAME_SIZE + 1]; // Added for AirPlay2
-	uint64_t features; // Added for AirPlay2
 	struct {
 		unsigned int ctrl, time;
 		struct { unsigned int avail, select, send; } audio;
@@ -333,38 +354,314 @@ typedef struct airplaycl_s {
 	uint8_t md_caps;
 	uint16_t port_base, port_range;
 	char passwd[64];
+
+	char session_uuid[37];	// Added for AirPlay2
+	uint64_t status_flags;	// Added for AirPlay2 - double check they are required once implementation is working
+	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
+	char name[AIRPLAY_NAME_SIZE + 1]; // Added for AirPlay2
+	uint64_t features; // Added for AirPlay2
+	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
+	// struct rtsp_response_s rtsp_response;	// Added for AirPlay2
+
+	/* Pairing, see pair.h  - Added for AirPlay2 */
+	// enum pair_type pair_type;
+	// struct pair_cipher_context *control_cipher_ctx;
+	// struct pair_verify_context *pair_verify_ctx;
+	// struct pair_setup_context *pair_setup_ctx;
+
 } airplaycl_data_t;
 
 extern log_level	airplay_loglevel;
 extern log_level 	main_log;
 static log_level 	*loglevel = &main_log;
 
-static void 	*_rtp_timing_thread(void *args);
-static void 	*_rtp_control_thread(void *args);
-static void 	_airplaycl_terminate_rtp(struct airplaycl_s *p);
-static void 	_airplaycl_send_sync(struct airplaycl_s *p, bool first);
-static bool 	_airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int size);
-static bool 	_airplaycl_disconnect(struct airplaycl_s *p, bool force);
+/*----------------------- Generic Helpers ---------------------------------*/
+
+// static int 	safe_hextou64(const char *str, uint64_t *val);
+static void uuid_make(char *str);
+// static void device_id_colon_make(char *id_str, int size, uint64_t id);
+// static int 	device_id_colon_parse(uint64_t *id, const char *id_str);
+
+/*----------------------- Pairing Helpers ---------------------------------*/
+
+// static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
+// static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
+// static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
+
+/*----------------------- ? ---------------------------------*/
+
+static void *_rtp_timing_thread(void *args);
+static void *_rtp_control_thread(void *args);
+static void _airplaycl_terminate_rtp(struct airplaycl_s *p);
+static void _airplaycl_send_sync(struct airplaycl_s *p, bool first);
+static bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int size);
+static bool _airplaycl_disconnect(struct airplaycl_s *p, bool force);
 
 /*----------------------- Generic Helpers ---------------------------------*/
 
+// Converts hex string to a uint64
+// @param str the hex string to be converted
+// @param val pointer to where the converted value will be returned
+// @returns 0 on success, -1 on failure
+// static int safe_hextou64(const char *str, uint64_t *val)
+// {
+// 	char *end;
+// 	unsigned long long intval;
+
+// 	if (str == NULL) {
+// 		LOG_DEBUG("Input to safe_hextou64 is NULL\n");
+// 		return -1;
+// 	}
+
+// 	errno = 0;
+// 	intval = strtoull(str, &end, 16);
+
+// 	if (((errno == ERANGE) && (intval == ULLONG_MAX)) || ((errno != 0) && (intval == 0))) {
+// 		LOG_DEBUG("Invalid u64 in string (%s): %s\n", str, strerror(errno));
+// 		return -1;
+// 	}
+
+// 	if (end == str) {
+// 		LOG_DEBUG("No u64 found in string (%s)\n", str);
+// 		return -1;
+// 	}
+
+// 	if (intval > UINT64_MAX) {
+// 		LOG_DEBUG("u64 value out of range (%s)\n", str);
+// 		return -1;
+// 	}
+
+// 	*val = (uint64_t)intval;
+
+// 	return 0;
+// }
+
 // Create a uuid
 // @param str a pointer to the UUID that will be created
-void
-uuid_make(char *str)
+static void uuid_make(char *str)
 {
-  uuid_t uu;
+	uuid_t uu;
 
-  uuid_generate_random(uu);
-  uuid_unparse_upper(uu, str);
-  LOG_DEBUG("Session UUID set to %s", str);
+	uuid_generate_random(uu);
+	uuid_unparse_upper(uu, str);
+	LOG_DEBUG("Session UUID set to %s", str);
 }
+
+// Converts uint64t libhash -> AA:BB:CC:DD:EE:FF:11:22
+// static void device_id_colon_make(char *id_str, int size, uint64_t id)
+// {
+// 	int r, w;
+
+// 	snprintf(id_str, size, "%016" PRIX64, id);
+
+// 	for (r = strlen(id_str) - 1, w = size - 2; r != w; r--, w--) {
+// 		id_str[w] = id_str[r];
+// 		if (r % 2 == 0) {
+// 			w--;
+// 			id_str[w] = ':';
+// 		}
+// 	}
+
+// 	id_str[size - 1] = 0; // Zero terminate
+// }
+
+// Converts AA:BB:CC:DD:EE:FF -> AABBCCDDEEFF -> uint64 id
+// @param id pointer to the "decolonised" device_id
+// @paramv id_str the device id to be "decolonised"
+// static int device_id_colon_parse(uint64_t *id, const char *id_str)
+// {
+// 	char *s;
+// 	char *ptr;
+// 	int ret;
+
+// 	s = calloc(1, strlen(id_str) + 1);
+
+// 	for (ptr = s; *id_str != '\0'; id_str++) {
+// 		if (*id_str == ':') continue;
+
+// 		*ptr = *id_str;
+// 		ptr++;
+// 	}
+
+// 	ret = safe_hextou64(s, id);
+// 	free(s);
+
+// 	return ret;
+// }
+
+/*--------------------- Pairing Helpers sourced from owntones ------------------------------*/
+//payload_make_pair_generic(int step, struct evrtsp_request *req, struct airplay_session *rs
+// static int payload_make_pair_generic(struct airplaycl_s *p, int step)
+// {
+// 	uint8_t *body;
+// 	// size_t len;
+// 	const char *errmsg;
+
+
+// 	switch (step) {
+// 		case 1:
+// 			LOG_ERROR("pair_setup_request1 and pair_setup_errmsg not yet implemented");
+// 			// body    = pair_setup_request1(&len, p->pair_setup_ctx);
+// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+// 			break;
+// 			//   case 2:
+// 			// body    = pair_setup_request2(&len, p->pair_setup_ctx);
+// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+// 			// break;
+// 			//   case 3:
+// 			// body    = pair_setup_request3(&len, p->pair_setup_ctx);
+// 			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+// 			// break;
+// 			//   case 4:
+// 			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
+// 			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+// 			// break;
+// 			//   case 5:
+// 			// body    = pair_verify_request2(&len, p->pair_verify_ctx);
+// 			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+// 			// break;
+// 		default:
+// 			body    = NULL;
+// 			errmsg  = "Bug! Bad step number";
+// 	}
+
+// 	if (!body) {
+// 		LOG_ERROR("Verification step %d request error: %s", step, errmsg);
+// 		return -1;
+// 	}
+
+// 	LOG_INFO("TODO: Implement a method to update the RTSP output buffer with %s", body);
+// 	//   evbuffer_add(req->output_buffer, body, len);
+// 	free(body);
+
+// 	// Required!!
+// 	LOG_INFO("TODO: Handlers for PAIR_CLIENT_HOMEKIT_NORMAL and PAIR_CLIENT_HOMEKIT_TRANSIENT");
+// 	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+// 	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_NORMAL");
+// 	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "3");
+// 	// else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+// 	// 	LOG_WARN("payload_make_pair_generic:TODO: Handle PAIR_CLIENT_HOMEKIT_TRANSIENT");
+// 	// 	// evrtsp_add_header(req->output_headers, "X-Apple-HKP", "4");
+
+// 	return 0;
+// }
+
+// static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
+// {
+// 	const char *pin = arg;
+// 	uint64_t device_id;
+// 	char device_id_hex[16 + 1];
+
+// 	if (!pin && p->passwd[0])
+// 		pin = &p->passwd[0]; // For password based authentication
+
+// 	if (pin)
+// 		LOG_INFO("TODO: Handler for PIN or Password");
+// 		// p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+
+// 	device_id_colon_parse(&device_id, p->device_id);
+// 	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
+
+// 	LOG_INFO("TODO: Implement entry into pair_ap library");
+// 	// p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
+// 	// if (!p->pair_setup_ctx) {
+// 	// 	LOG_ERROR("Out of memory for verification setup context");
+// 	// 	return -1;
+// 	// }
+
+// 	p->state = AIRPLAY_STATE_AUTH;
+
+// 	return payload_make_pair_generic(p, 1);
+// }
+
+// static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
+// {
+//   enum airplay_seq_type seq_type;
+
+//   seq_type = response_handler_info_generic(p);
+//   if (seq_type != AIRPLAY_SEQ_ABORT && seq_type != AIRPLAY_SEQ_PIN_START)
+// 	LOG_INFO("TODO: Check whether we need to add a next_seq to the airplaycl_s structure");
+//     // p->next_seq = AIRPLAY_SEQ_START_PLAYBACK; // Pair and then run SEQ_START_PLAYBACK which sets up the playback
+
+//   return seq_type;
+// }
+
+// static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
+// {
+// 	// uint8_t *response;
+// 	const char *errmsg;
+// 	// size_t len;
+// 	int ret;
+
+// 	LOG_INFO("TODO: Get the response data");
+// 	// response = evbuffer_pullup(req->input_buffer, -1);
+// 	// len = evbuffer_get_length(req->input_buffer);
+
+// 	switch (step) {
+// 		case 1:
+// 			LOG_INFO("TODO: Build handler connection to pair_ap library");
+// 			ret = 1;
+// 			errmsg = "Not yet implemented";
+// 		// 	ret = pair_setup_response1(rs->pair_setup_ctx, response, len);
+// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+// 			break;
+// 		// case 2:
+// 		// 	ret = pair_setup_response2(rs->pair_setup_ctx, response, len);
+// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+// 		// 	break;
+// 		// case 3:
+// 		// 	ret = pair_setup_response3(rs->pair_setup_ctx, response, len);
+// 		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+// 		// 	break;
+// 		// case 4:
+// 		// 	ret = pair_verify_response1(rs->pair_verify_ctx, response, len);
+// 		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
+// 		// 	break;
+// 		// case 5:
+// 		// 	ret = pair_verify_response2(rs->pair_verify_ctx, response, len);
+// 		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
+// 		// 	break;
+// 		default:
+// 			ret = -1;
+// 			errmsg = "Bug! Bad step number";
+// 	}
+
+// 	if (ret < 0) {
+// 		LOG_ERROR("Pairing step %d response from '%s' error: %s", step, p->name, errmsg);
+// 		// DHEXDUMP(E_DBG, L_AIRPLAY, response, len, "Raw response");
+// 		return AIRPLAY_SEQ_ABORT;
+// 	}
+
+// 	return AIRPLAY_SEQ_CONTINUE;
+// }
+
+// static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
+// {
+// 	// struct output_device *device;
+
+// 	LOG_INFO("TODO: Check the RTSP response code to see if PIN is required. Assuming No for the moment");
+// 	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
+// 	// 	p->rtspcl->response_code == RTSP_CONNECTION_AUTH_REQUIRED) {
+
+// 	// 	// I suspect this deals with the case where the device is removed by owntones.
+// 	// 	// device = outputs_device_get(rs->device_id);
+// 	// 	// if (!device)
+// 	// 	// 	return AIRPLAY_SEQ_ABORT;
+
+// 	// 	device->requires_auth = 1; // FIXME might be reset by mdns announcement
+// 	// 	rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+
+// 	// 	return AIRPLAY_SEQ_PIN_START;
+// 	// }
+
+// 	return response_handler_pair_generic(1, p);
+// }
 
 /*----------------------------------------------------------------------------*/
 airplay_state_t airplaycl_state(struct airplaycl_s *p)
 {
 	if (!p) return AIRPLAY_DOWN;
-	return p->state;
+	return p->raop_state;
 }
 
 
@@ -438,7 +735,7 @@ bool airplaycl_is_connected(struct airplaycl_s *p)
 /*----------------------------------------------------------------------------*/
 bool airplaycl_is_sane(struct airplaycl_s *p)
 {
-	if (p && p->state == AIRPLAY_STREAMING &&
+	if (p && p->raop_state == AIRPLAY_STREAMING &&
 		(!rtspcl_is_sane(p->rtspcl) ||
 		 (p->sane.audio.send + p->sane.audio.avail*5 +  p->sane.audio.select*50) >= 500 ||
 		 p->sane.ctrl > 2 || p->sane.time > 2)) return false;
@@ -524,7 +821,7 @@ bool airplaycl_keepalive(struct airplaycl_s *p) {
 /*----------------------------------------------------------------------------*/
 void airplaycl_pause(struct airplaycl_s *p)
 {
-	if (!p || p->state != AIRPLAY_STREAMING) return;
+	if (!p || p->raop_state != AIRPLAY_STREAMING) return;
 
 	pthread_mutex_lock(&p->mutex);
 
@@ -582,16 +879,16 @@ bool airplaycl_accept_frames(struct airplaycl_s *p)
 		now_ts = NTP2TS(now, p->sample_rate);
 
 		// Not flushed yet, but we have time to wait, so pretend we are full
-		if (p->state != AIRPLAY_FLUSHED && (!p->start_ts || p->start_ts > now_ts + airplaycl_latency(p))) {
+		if (p->raop_state != AIRPLAY_FLUSHED && (!p->start_ts || p->start_ts > now_ts + airplaycl_latency(p))) {
 			pthread_mutex_unlock(&p->mutex);
 			return false;
 		 }
 
 		// move to streaming only when really flushed - not when timedout
-		if (p->state == AIRPLAY_FLUSHED) {
+		if (p->raop_state == AIRPLAY_FLUSHED) {
 			p->first_pkt = first_pkt = true;
 			LOG_INFO("[%p]: begining to stream hts:%" PRIu64 " n:%u.%u", p, p->head_ts, AIRPLAY_SECNTP(now));
-			p->state = AIRPLAY_STREAMING;
+			p->raop_state = AIRPLAY_STREAMING;
 		}
 
 		// unpausing ...
@@ -691,10 +988,10 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	 done by the airplaycl_accept_frames function, except when a player takes too
 	 long to flush (JBL OnBeat) and we have to "fake" accepting frames
 	*/
-	if (p->state == AIRPLAY_FLUSHED) {
+	if (p->raop_state == AIRPLAY_FLUSHED) {
 		p->first_pkt = true;
 		LOG_INFO("[%p]: begining to stream (LATE) hts:%" PRIu64 " n:%u.%u", p, p->head_ts, AIRPLAY_SECNTP(now));
-		p->state = AIRPLAY_STREAMING;
+		p->raop_state = AIRPLAY_STREAMING;
 		_airplaycl_send_sync(p, true);
 	}
 
@@ -791,7 +1088,7 @@ bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int s
 	 uses airplaycld_accept_frames() and tries to send frames even before the
 	 connect has returned in case of multi-threaded application
 	*/
-	if (p->rtp_ports.audio.fd == -1 || p->state != AIRPLAY_STREAMING) return false;
+	if (p->rtp_ports.audio.fd == -1 || p->raop_state != AIRPLAY_STREAMING) return false;
 
 	addr.sin_family = AF_INET;
 	addr.sin_addr = p->peer_addr;
@@ -841,7 +1138,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 							   char *et, char *md,
 							   int sample_rate, int sample_size, int channels, float volume)
 {
-	airplaycl_data_t *airplaycld;
+	struct airplaycl_s *airplaycld;
 
     LOG_DEBUG("Creating AirPlay session for host %s with DACP ID %s", inet_ntoa(host), DACP_id);
 
@@ -878,6 +1175,8 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	if (md && strchr(md, '0')) airplaycld->md_caps |= MD_TEXT;
 	if (md && strchr(md, '1')) airplaycld->md_caps |= MD_ARTWORK;
 	if (md && strchr(md, '2')) airplaycld->md_caps |= MD_PROGRESS;
+
+	// LOG_DEBUG("rtsp response = %d", airplaycld->rtsp_response.rtsp_response);
 
 	// init RTSP if needed
 	if (((airplaycld->rtspcl = rtspcl_create(user_agent)) == NULL)) {
@@ -937,7 +1236,7 @@ bool airplaycl_set_volume(struct airplaycl_s *p, float vol)
 
 	p->volume = vol;
 
-	if (!p->rtspcl || p->state < AIRPLAY_FLUSHED) return true;
+	if (!p->rtspcl || p->raop_state < AIRPLAY_FLUSHED) return true;
 
 	sprintf(a, "volume: %f\r\n", vol);
 
@@ -964,7 +1263,7 @@ bool airplaycl_set_progress(struct airplaycl_s *p, uint64_t elapsed, uint64_t du
 	char a[128];
 	uint64_t end, now;
 
-	if (!p || !p->rtspcl || p->state < AIRPLAY_STREAMING || !(p->md_caps & MD_PROGRESS)) return false;
+	if (!p || !p->rtspcl || p->raop_state < AIRPLAY_STREAMING || !(p->md_caps & MD_PROGRESS)) return false;
 
 	now = NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate);
 	p->started_ts = now - NTP2TS(elapsed, p->sample_rate);
@@ -980,10 +1279,10 @@ uint64_t airplaycl_get_progress_ms(struct airplaycl_s* p)
 {
 	uint64_t elapsed, now;
 
-	if (!p || p->state < AIRPLAY_FLUSHING || !p->rtspcl || !(p->md_caps & MD_PROGRESS)) return 0;
+	if (!p || p->raop_state < AIRPLAY_FLUSHING || !p->rtspcl || !(p->md_caps & MD_PROGRESS)) return 0;
 
 	// if we have no pause_ts and we are flushing or are not streaming, then we are stopped
-	if ((p->flushing || p->state < AIRPLAY_STREAMING) && !p->pause_ts) return 0;
+	if ((p->flushing || p->raop_state < AIRPLAY_STREAMING) && !p->pause_ts) return 0;
 
 	// we are not stopped, then pause_ts is to be taken into account if not 0
 	now = p->pause_ts ? p->pause_ts : NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate);
@@ -995,7 +1294,7 @@ uint64_t airplaycl_get_progress_ms(struct airplaycl_s* p)
 /*----------------------------------------------------------------------------*/
 bool airplaycl_set_artwork(struct airplaycl_s *p, char *content_type, int size, char *image)
 {
-	if (!p || !p->rtspcl || p->state < AIRPLAY_FLUSHED || !(p->md_caps & MD_ARTWORK)) return false;
+	if (!p || !p->rtspcl || p->raop_state < AIRPLAY_FLUSHED || !(p->md_caps & MD_ARTWORK)) return false;
 
 	return rtspcl_set_artwork(p->rtspcl, p->head_ts + p->latency_frames, content_type, size, image);
 }
@@ -1005,7 +1304,7 @@ bool airplaycl_set_daap(struct airplaycl_s *p, int count, ...)
 {
 	va_list args;
 
-	if (!p || p->state < AIRPLAY_FLUSHED || !(p->md_caps & MD_TEXT)) return false;
+	if (!p || p->raop_state < AIRPLAY_FLUSHED || !(p->md_caps & MD_TEXT)) return false;
 
 	va_start(args, count);
 
@@ -1093,34 +1392,34 @@ static bool airplaycl_set_sdp(struct airplaycl_s *p, char *sdp)
 // @param bplist a pointer to the binary plist that is constructed by this function.
 // @param bplist_len a point to the length of the constructed plist
 // @returns true on success, false on failure
-static bool airplaycl_setup_session(struct airplaycl_s *p, char *bplist, uint32_t *bplist_len)
-{
-	plist_t root;
-	plist_t pdevice;
-	plist_t puuid;
-	plist_t ptiming_port;
-	plist_t ptiming_protocol;
+// static bool airplaycl_setup_session(struct airplaycl_s *p, char *bplist, uint32_t *bplist_len)
+// {
+// 	plist_t root;
+// 	plist_t pdevice;
+// 	plist_t puuid;
+// 	plist_t ptiming_port;
+// 	plist_t ptiming_protocol;
 
-	pdevice = plist_new_string(p->device_id);
-	puuid = plist_new_string(p->session_uuid);
-	ptiming_port = plist_new_uint(p->rtp_ports.time.lport);
-	ptiming_protocol = plist_new_string("NTP");
+// 	pdevice = plist_new_string(p->device_id);
+// 	puuid = plist_new_string(p->session_uuid);
+// 	ptiming_port = plist_new_uint(p->rtp_ports.time.lport);
+// 	ptiming_protocol = plist_new_string("NTP");
 
-	root = plist_new_dict();
-	plist_dict_set_item(root, AIRPLAY_PLIST_DEVICE_ID, pdevice);
-	plist_dict_set_item(root, AIRPLAY_PLIST_SESSION_UUID, puuid);
-	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PORT, ptiming_port);
-	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PROTOCOL, ptiming_protocol);
+// 	root = plist_new_dict();
+// 	plist_dict_set_item(root, AIRPLAY_PLIST_DEVICE_ID, pdevice);
+// 	plist_dict_set_item(root, AIRPLAY_PLIST_SESSION_UUID, puuid);
+// 	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PORT, ptiming_port);
+// 	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PROTOCOL, ptiming_protocol);
 
-	plist_to_bin(root, &bplist, bplist_len);
-	plist_free(root);
-	plist_free(pdevice);
-	plist_free(puuid);
-	plist_free(ptiming_port);
-	plist_free(ptiming_protocol);
+// 	plist_to_bin(root, &bplist, bplist_len);
+// 	plist_free(root);
+// 	plist_free(pdevice);
+// 	plist_free(puuid);
+// 	plist_free(ptiming_port);
+// 	plist_free(ptiming_protocol);
 
-	return true;
-}
+// 	return true;
+// }
 
 /*----------------------------------------------------------------------------*/
 // Extract AirPlay player information that is required for managing the session
@@ -1128,7 +1427,7 @@ static bool airplaycl_setup_session(struct airplaycl_s *p, char *bplist, uint32_
 // @param p the airplay client handle that will be updated
 // @param pinfo the binary plist containing the airplay device information
 // @returns true on success, false on failure
-// @todo Maybe we also need to extract the 'features' and check them against our capabilities?
+// @todo Perhaps use this function to "connect" to the owntones sequencing logic/functions??
 static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 	const char *device_id = NULL;
 	const char *name = NULL;
@@ -1178,7 +1477,7 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 	item = plist_dict_get_item(pinfo, AIRPLAY_PLIST_FEATURES);
 	if (item) {
 		plist_get_uint_val(item, &p->features);
-		LOG_INFO("%s has features %u\n", p->name, p->features);
+		LOG_INFO("%s has features %" PRIX64 "\n", p->name, p->features);
 		plist_free(item);
 	}
 	if (!airplaycl_assess_features(p)) {
@@ -1202,6 +1501,7 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 
 	// We need to assess the status flags to determine what the next step should be.
 	// It might make sense to replicate the state machine approach used in owntones
+	LOG_INFO("TODO: Implement a form of state machine logic based upon examination of the status flags");
 	if (p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED) {
 		LOG_INFO("%s:One time pairing still to be implemented - is this based on the secret??", p->name);
 		return false;
@@ -1277,7 +1577,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	if (!p) return false;
 
-	if (p->state >= AIRPLAY_FLUSHING) return true;
+	if (p->raop_state >= AIRPLAY_FLUSHING) return true;
 
 	kd[0].key = NULL;
 	port.offset = rand() % p->port_range;
@@ -1309,25 +1609,35 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	// Now we need to send RTSP GET /info to obtain airplay device details that will
 	// be required in future exchanges 
+	// LOG_DEBUG("p->rtspcl=%p, p->rtsp_response=%p", p->rtspcl, p->rtsp_response);
 	if (!rtspcl_get_info(p->rtspcl, &pinfo, &plen)) {
 		LOG_ERROR("[%p]: cannot get info", p);
 		goto erexit;
 	}
+	// LOG_DEBUG("RTSP/1.0:%s %d %s", p->rtsp_response.rtsp_response ? "true" : "false",
+	// 	p->rtsp_response.status_code, p->rtsp_response.description);
+	// LOG_DEBUG("Content-Type: %s, length %d", p->rtsp_response.content_type,
+	// 	p->rtsp_response.length);
+
 	if (!pinfo) {
-		LOG_ERROR("No plist returned from rtspcl_get_info()\n");
+		LOG_ERROR("No plist returned from rtspcl_get_info()");
 		goto erexit;
 	}
 	if (!airplaycl_analyse_info(p, pinfo)) {
 		LOG_ERROR("Unable to analyse GET /info plist\n");
 		goto erexit;
 	}
+	LOG_DEBUG("pinfo (%p), length %d analysed", pinfo, plen);
 	plist_free(pinfo);
 
 	// RTSP pairing verify for AppleTV
-	if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
+	// if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;
 
 	// Send pubkey for MFi devices
-	if (strchr(p->et, '4')) rtspcl_auth_setup(p->rtspcl);
+	// if (strchr(p->et, '4')) rtspcl_auth_setup(p->rtspcl);
+	// if ((p->features & AIRPLAY_FEATURE_SUPPORTS_UNIFIEDPAIRSETUPANDMFI)) {
+	// 	rtspcl_auth_setup(p->rtspcl);
+	// }
 
 	// build sdp parameter
 	// TODO <@bradkeifer> - can probably delete this SDP stuff for AirPlay2
@@ -1378,18 +1688,22 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// if (!rtspcl_setup(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
 	// if (!airplaycl_analyse_setup(p, kd)) goto erexit;
 	// kd_free(kd);
-	char *req_bplist = NULL;
-	plist_t *resp_plist = NULL;
-	uint32_t req_bplist_len = 0;
-	uint32_t resp_plist_len = 0;
-	// We need to free the memory allocated for the bplist when we have finished with it
-	airplaycl_setup_session(p, req_bplist, &req_bplist_len);
-	LOG_DEBUG("%s setup session bplist constructed with length %d", p->name, req_bplist_len);
-	if (!rtspcl_setup_session(p->rtspcl, &p->rtp_ports, req_bplist, req_bplist_len, resp_plist, &resp_plist_len)) {
-		LOG_ERROR("%s unable to setup RTSP session");
-		if (req_bplist) plist_to_bin_free(req_bplist);
-		goto erexit;
-	}
+
+	// Below commented code has been built and basic testing done.
+	// Further review of owntones code has found that auth-setup exchange is done
+	// after get /info, so let's postpone this code for a while
+	// char *req_bplist = NULL;
+	// plist_t *resp_plist = NULL;
+	// uint32_t req_bplist_len = 0;
+	// uint32_t resp_plist_len = 0;
+	// // We need to free the memory allocated for the bplist when we have finished with it
+	// airplaycl_setup_session(p, req_bplist, &req_bplist_len);
+	// LOG_DEBUG("%s setup session bplist constructed with length %d", p->name, req_bplist_len);
+	// if (!rtspcl_setup_session(p->rtspcl, &p->rtp_ports, req_bplist, req_bplist_len, resp_plist, &resp_plist_len)) {
+	// 	LOG_ERROR("%s unable to setup RTSP session");
+	// 	if (req_bplist) plist_to_bin_free(req_bplist);
+	// 	goto erexit;
+	// }
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
 	LOG_DEBUG( "[%p]:opened timing socket  l:%5d r:%d", p, p->rtp_ports.time.lport, p->rtp_ports.time.rport );
@@ -1406,10 +1720,11 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	p->ctrl_running = true;
 	pthread_create(&p->ctrl_thread, NULL, _rtp_control_thread, (void*) p);
+	LOG_INFO("Control thread running");
 
 	pthread_mutex_lock(&p->mutex);
 	// as connect might take time, state might already have been set
-	if (p->state == AIRPLAY_DOWN) p->state = AIRPLAY_FLUSHED;
+	if (p->raop_state == AIRPLAY_DOWN) p->raop_state = AIRPLAY_FLUSHED;
 	pthread_mutex_unlock(&p->mutex);
 
 	// if (set_volume) {
@@ -1418,6 +1733,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// }
 
 	if (sac) free(sac);
+	LOG_DEBUG("Returning true");
 	return true;
 
  erexit:
@@ -1433,10 +1749,10 @@ bool _airplaycl_disconnect(struct airplaycl_s *p, bool force)
 {
 	bool rc = true;
 
-	if (!force && (!p || p->state == AIRPLAY_DOWN)) return true;
+	if (!force && (!p || p->raop_state == AIRPLAY_DOWN)) return true;
 
 	pthread_mutex_lock(&p->mutex);
-	p->state = AIRPLAY_DOWN;
+	p->raop_state = AIRPLAY_DOWN;
 	pthread_mutex_unlock(&p->mutex);
 
 	_airplaycl_terminate_rtp(p);
@@ -1486,7 +1802,7 @@ bool airplaycl_sanitize(struct airplaycl_s *p)
 
 	pthread_mutex_trylock(&p->mutex);
 
-	p->state = AIRPLAY_DOWN;
+	p->raop_state = AIRPLAY_DOWN;
 	p->head_ts = p->pause_ts = p->start_ts = p->first_ts = 0;
 	p->first_pkt = false;
 	p->flushing = true;
@@ -1503,15 +1819,18 @@ bool airplaycl_sanitize(struct airplaycl_s *p)
 // @todo Improve features assessment logic
 bool airplaycl_assess_features(struct airplaycl_s *p) {
 	int features_map_count = 0;
+	uint64_t bitmask;
 
 	features_map_count = sizeof(features_map) / sizeof(struct features_type_map);
 	for (int i = 0; i < features_map_count; i++) {
-		const uint64_t bitmask = (1 << features_map[i].bit);
+		bitmask = ((uint64_t)1 << features_map[i].bit);
 		if (p->features & bitmask) {
-			LOG_INFO("%s supports %s", p->name, features_map[i].name);
+			LOG_INFO("%s supports %s. Bit %d, %" PRIX64 "", 
+				p->name, features_map[i].name, features_map[i].bit, bitmask);
 		}
 		else {
-			LOG_DEBUG("%s does NOT support %s", p->name, features_map[i].name);
+			LOG_DEBUG("%s does NOT support %s. Bit %d, %" PRIX64 "", 
+				p->name, features_map[i].name, features_map[i].bit, bitmask);
 		}
 	}
 
@@ -1534,7 +1853,7 @@ void _airplaycl_send_sync(struct airplaycl_s *airplaycld, bool first)
 	addr.sin_port = htons(airplaycld->rtp_ports.ctrl.rport);
 
 	// do not send timesync on FLUSHED
-	if (airplaycld->state != AIRPLAY_STREAMING) return;
+	if (airplaycld->raop_state != AIRPLAY_STREAMING) return;
 
 	rsp.hdr.proto = 0x80 | (first ? 0x10 : 0x00);
 	rsp.hdr.type = 0x54 | 0x80;

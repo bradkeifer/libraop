@@ -61,12 +61,14 @@ char cmdPipeBuf[512];
 int latency = MS2TS(1000, 44100);
 struct raopcl_s *raopcl;
 struct airplaycl_s *airplaycl;
+
 enum
 {
 	STOPPED,
 	PAUSED,
 	PLAYING
 } status;
+
 
 // debug level from tools & other elements
 log_level util_loglevel;
@@ -459,10 +461,12 @@ int main(int argc, char *argv[])
 		else if (!player.hostname)
 		{
 			player.hostname = argv[i];
+			fprintf(stderr,"i=%d, player.hostname=%s, argc=%d", i, player.hostname, argc);
 		}
 		else if (!fname)
 		{
 			fname = argv[i];
+			fprintf(stderr,"i=%d, fname=%s", i, fname);
 		}
 	}
 
@@ -658,12 +662,15 @@ int main(int argc, char *argv[])
 			}
 
 			// connect to player
-			LOG_INFO("Connecting to player: %s (%s:%hu)", player.udn ? player.udn : player.hostname, inet_ntoa(player.addr), player.port);
+			LOG_INFO("Connecting to player: %s (%s:%hu)", player.udn ? player.udn : player.hostname, 
+				inet_ntoa(player.addr), player.port);
 			if (!airplaycl_connect(airplaycl, player.addr, player.port, volume > 0))
 			{
-				LOG_ERROR("Cannot connect to AirPlay device %s:%hu, check firewall & port", inet_ntoa(player.addr), player.port);
+				LOG_ERROR("Cannot connect to AirPlay device %s:%hu, check firewall & port",
+					inet_ntoa(player.addr), player.port);
 				goto exit;
 			}
+			LOG_INFO("Connected to player: %s", player.udn ? player.udn : player.hostname);
 
 			// latency = raopcl_latency(raopcl);
 
@@ -694,8 +701,11 @@ int main(int argc, char *argv[])
 	if (buf) free(buf);
 	if (ap_version == 1)
 		raopcl_disconnect(raopcl);
-	else if (ap_version == 2)
+	else if (ap_version == 2) {
+		LOG_DEBUG("raopcl_disconnect");
 		raopcl_disconnect(raopcl);
+		LOG_DEBUG("raopcl_disconnected");
+	}
 	pthread_join(glCmdPipeReaderThread, NULL);
 	goto exit;
 

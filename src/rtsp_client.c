@@ -31,6 +31,7 @@
 #include "cross_net.h"
 #include "cross_util.h"
 #include "cross_log.h"
+// #include "rtsp_common.h"
 #include "rtsp_client.h"
 
 #define PUBLIC_KEY_SIZE 32
@@ -52,6 +53,11 @@ typedef struct rtspcl_s {
 		char realm[16], nonce[256+1];
 		char ha1[32+1];
 	} digest;
+
+	// Added for AirPlay2 support
+	// bool rtsp_response;		// True if we get an RTSP response. False otherwise.
+	// int status_code;		// The RTSP status code of the response
+	// char description[256];	// The description of the status code
 } rtspcl_t;
 
 // extern log_level 	raop_loglevel;
@@ -66,6 +72,8 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 key_data_t *kd, char **resp_content, int *resp_len,
 			 char* url);
 
+// static void rtspcl_clear_response(rtsp_response_t *r);
+// static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *pkd, rtsp_response_t *resp);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -513,6 +521,30 @@ bool rtspcl_pair_verify(struct rtspcl_s *p, char *secret_hex) {
 }
 
 /*----------------------------------------------------------------------------*/
+/* This comment from owntone codebase
+The purpose of auth-setup is to authenticate the device and to exchange keys
+for encryption. We don't do that, but some AirPlay 2 speakers (Sonos beam,
+Airport Express fw 7.8) require this step anyway, otherwise we get a 403 to
+our ANNOUNCE. So we do it with a flag for no encryption, and without actually
+authenticating the device.
+
+Good to know (source Apple's MFi Accessory Interface Specification):
+- Curve25519 Elliptic-Curve Diffie-Hellman technology for key exchange
+- RSA for signing and verifying and AES-128 in counter mode for encryption
+- We start by sending a Curve25519 public key + no encryption flag
+- The device responds with public key, MFi certificate and a signature, which
+  is created by the device signing the two public keys with its RSA private
+  key and then encrypting the result with the AES master key derived from the
+  Curve25519 shared secret (generated from device private key and our public
+  key)
+- The AES key derived from the Curve25519 shared secret can then be used to
+  encrypt future content
+- New keys should be generated for each authentication attempt, but we don't
+  do that because we don't really use this + it adds a libsodium dependency
+
+Since we don't do auth nor encryption, we currently just ignore the reponse.
+*/
+
 bool rtspcl_auth_setup(struct rtspcl_s *p) {
 	if (!p) return false;
 
@@ -587,6 +619,10 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	int timeout = 10000; // msec unit
 	struct pollfd pfds;
 	key_data_t lkd[MAX_KD], *pkd;
+
+	// rtspcld->rtsp_response = false;
+	// rtspcld->status_code = 0;
+	// rtspcld->description[0] = 0;
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
 
@@ -665,7 +701,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	   LOG_ERROR( "[%p]: couldn't write request (%d!=%d)", rtspcld, rval, len );
 	}
 
-	if (!get_response) return true;
+	if (!get_response)
+		return true;
 
 	if (http_read_line(rtspcld->fd, line, sizeof(line), timeout, true) <= 0) {
 		LOG_ERROR("[%p]: response : %s request failed", rtspcld, line);
@@ -674,12 +711,34 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	token = strtok(line, delimiters);
+	LOG_DEBUG("token should be RTSP/1.0: %s", token);
+	if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
+		// rtspcld->rtsp_response = true;
+		LOG_DEBUG("Valid RTSP/1.0 Response");
+	}
 	token = strtok(NULL, delimiters);
+
 	if (token == NULL || strcmp(token, "200")) {
 		LOG_ERROR("[%p]: <------ : request failed, error %s", rtspcld, line);
-		if (get_response == 1) return false;
+		if (get_response == 1) {
+			// if (token) {
+			// 	rtspcld->status_code = (int)strtol(token, NULL, 10);
+			// 	while ((token = strtok(NULL, delimiters))) {
+			// 		if ((strlen(rtspcld->description) + 
+			// 			strlen(token) < sizeof(rtspcld->description)))
+			// 		strcat(rtspcld->description, token);
+			// 	}
+			// }
+			return false;
+		}
 	} else {
 		LOG_DEBUG("[%p]: <------ : %s: request ok", rtspcld, token);
+		// rtspcld->status_code = (int)strtol(token, NULL, 10);
+		// while ((token = strtok(NULL, delimiters))) {
+		// 	if ((strlen(rtspcld->description) + 
+		// 		strlen(token) < sizeof(rtspcld->description)))
+		// 	strcat(rtspcld->description, token);
+		// }
 	}
 
 	i = 0;
@@ -749,20 +808,27 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 // Requests GET /info from the Airplay device and returns the plist received.
 // @param p the RTSP client handle
-// @param rplist the plist received from the AirrPlay device
+// @param rplist the plist received from the AirPlay device
 // @param rplen the length of the plist received from the AirPlay device
 // @returns true on success, false on failure
 bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 	char *resp_content;
 	int resp_len = 0;
 	plist_t pinfo = NULL;
+	key_data_t rkd;
 
+	// rtspcl_clear_response(resp);
 	if (!p) return false;
 
-	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, NULL, (char **) &resp_content, &resp_len, NULL)) {
+	LOG_DEBUG("Calling exec_request");
+	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, &rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
 	}
+
+	// rtspcl_process_header_response(p, &rkd, resp);
+	// LOG_DEBUG("Response status:%d %s", resp->status_code, resp->description);
+	// LOG_DEBUG("Content-Type: %s", resp->content_type);
 
 	plist_from_bin(resp_content, resp_len, &pinfo);
 
@@ -772,16 +838,23 @@ bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 	}
 	*rplist = pinfo;
 	*rplen = resp_len;
+	// resp->length = resp_len;
+	// if (!(resp->content = malloc(resp_len))) {
+	// 	LOG_ERROR("Unable to allocate memory for response content. %s", strerror(errno));
+	// 	goto erexit;
+	// }
+	// memcpy(resp->content, pinfo, resp_len);
+	kd_free(&rkd);
 	free(resp_content);
 	return true;
 
   erexit:
+	kd_free(&rkd);
 	free(resp_content);
 	plist_free(pinfo);
 	return false;
 }
 
-/*----------------------------------------------------------------------------*/
 // Handles the SETUP SESSION request/response with the AirPlay2 device
 // @param p the RTSP client handle
 // @param req_bplist the binary plist to send to the AirPlay2 device
@@ -796,3 +869,47 @@ bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 
 	return false;
 }
+
+// // Clears the RTSP response data from the RTSP client handle
+// // @param response pointer to the RTSP response handle
+// static void rtspcl_clear_response(rtsp_response_t *response) {
+// 	LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
+// 	LOG_DEBUG("response->content = %p, %s", response->content, response->content);
+// 	response->rtsp_response = false;
+// 	response->status_code = 0;
+// 	response->description[0] = 0;
+// 	response->content_type[0] = 0;
+// 	response->length = 0;
+// 	if (response->content) free(response->content); // In case prior consumer did not free
+// 	response->content = NULL;
+// 	return;
+// }
+
+// // Extracts the RTSP response header information required for the AirPlay2 functions
+// // @note Extraction of the response content is beyond the scope of this function
+// // @param p pointer to the RTSP client handle
+// // @param pkd the RTSP response header key data
+// // @param resp pointer to the RTSP response data to be stored
+// static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *pkd, rtsp_response_t *resp) {
+// 	if (p == NULL) {
+// 		LOG_ERROR("No RTSP client handle");
+// 		return;
+// 	}
+// 	resp->rtsp_response = p->rtsp_response;
+// 	resp->status_code = p->status_code;
+// 	strncpy(resp->description, p->description, sizeof(resp->description));
+// 	if (pkd == NULL) {
+// 		LOG_WARN("No key data in RTSP response header");
+// 		return;
+// 	}
+
+// 	// work through the key data and extract the items relevant for AirPlay2 sequencing logic
+// 	while (pkd->key) {
+// 		LOG_DEBUG("key: %s, data: %s", pkd->key, pkd->data);
+// 		if (strncmp(pkd->key, "Content-Type", strlen("Content-Type")) == 0)
+// 			strncpy(resp->content_type, pkd->data, sizeof(resp->content_type));
+// 		(void)*pkd++;
+// 	}
+
+// 	return;
+//}
