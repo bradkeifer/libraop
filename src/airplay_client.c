@@ -39,6 +39,7 @@
 #include "rtsp_client.h"
 #include "airplay_client.h"
 #include "aes.h"
+#include "pair.h"
 
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
@@ -364,10 +365,12 @@ typedef struct airplaycl_s {
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
 
 	/* Pairing, see pair.h  - Added for AirPlay2 */
-	// enum pair_type pair_type;
-	// struct pair_cipher_context *control_cipher_ctx;
-	// struct pair_verify_context *pair_verify_ctx;
-	// struct pair_setup_context *pair_setup_ctx;
+
+	enum pair_type pair_type;
+	struct pair_cipher_context *control_cipher_ctx;
+	struct pair_verify_context *pair_verify_ctx;
+	struct pair_setup_context *pair_setup_ctx;
+	enum airplay_seq_type next_seq;
 
 } airplaycl_data_t;
 
@@ -382,11 +385,24 @@ static void uuid_make(char *str);
 // static void device_id_colon_make(char *id_str, int size, uint64_t id);
 // static int 	device_id_colon_parse(uint64_t *id, const char *id_str);
 
-/*----------------------- Pairing Helpers ---------------------------------*/
+/* ----------------------- AirPlay Helpers --------------------------------*/
+
+static const char* airplay_seq_type_str(enum airplay_seq_type seq);
+static const char* airplay_state_str(enum airplay_state state);
+static const char* airplay_pair_type_str(enum pair_type pair_type);
+
+/*----------------------- RTSP Session Management --------------------------*/
 
 // static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
 // static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
 // static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
+
+static bool airplay_session_sequence_start(struct airplaycl_s *p);
+
+/*----------------------- AirPlay Client Data Management ------------------*/
+
+static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo);
+
 
 /*----------------------- ? ---------------------------------*/
 
@@ -489,7 +505,135 @@ static void uuid_make(char *str)
 // 	return ret;
 // }
 
-/*--------------------- Pairing Helpers sourced from owntones ------------------------------*/
+/* ----------------------- AirPlay Helpers --------------------------------*/
+
+// Helper to display human readable sequence type
+// @param seq_type the sequence type to get human readable text
+// @returns human readable description of the sequence type
+static const char* airplay_seq_type_str(enum airplay_seq_type seq_type) {
+	switch(seq_type) {
+		case AIRPLAY_SEQ_ABORT:
+			return("Abort");
+		case AIRPLAY_SEQ_START:
+			return("Start");
+		case AIRPLAY_SEQ_START_PLAYBACK:
+			return("Start Playback");
+		case AIRPLAY_SEQ_PROBE:
+			return("Probe");
+		case AIRPLAY_SEQ_FLUSH:
+			return("Flush");
+		case AIRPLAY_SEQ_STOP:
+			return("Stop");
+		case AIRPLAY_SEQ_FAILURE:
+			return("Failure");
+		case AIRPLAY_SEQ_PIN_START:
+			return("PIN Start");
+		case AIRPLAY_SEQ_SEND_VOLUME:
+			return("Send Volume");
+		case AIRPLAY_SEQ_SEND_TEXT:
+			return("Send Text");
+		case AIRPLAY_SEQ_SEND_PROGRESS:
+			return("Send Progress");
+		case AIRPLAY_SEQ_SEND_ARTWORK:
+			return("Send Artwork");
+		case AIRPLAY_SEQ_PAIR_SETUP:
+			return("Pair Setup");
+		case AIRPLAY_SEQ_PAIR_VERIFY:
+			return("Pair Verify");
+		case AIRPLAY_SEQ_PAIR_TRANSIENT:
+			return("Pair Transient");
+		case AIRPLAY_SEQ_FEEDBACK:
+			return("Feedback");
+		case AIRPLAY_SEQ_CONTINUE:
+			return("Continue");
+		default:
+			return("Illegal seq_type value");
+	}
+}
+
+// Helper to display human readable description of the airplay state
+// @param state the state to get human readable text
+// @returns human readable description of the airplay state
+static const char* airplay_state_str(enum airplay_state state) {
+	switch(state) {
+		case AIRPLAY_STATE_STOPPED:
+			return("Device Stopped");
+		case AIRPLAY_STATE_INFO:
+			return("Session Startup Info");
+		case AIRPLAY_STATE_ENCRYPTED:
+			return("Session Startup Encrypted");
+		case AIRPLAY_STATE_SETUP:
+			return("Session Startup Setup");
+		case AIRPLAY_STATE_RECORD:
+			return("Session Startup Record");
+		case AIRPLAY_STATE_CONNECTED:
+			return("Session established");
+		case AIRPLAY_STATE_STREAMING:
+			return("Connected Streaming");
+		case AIRPLAY_STATE_TEARDOWN:
+			return("Teardown in progress");
+		case AIRPLAY_STATE_FAILED:
+			return("Session Failed");
+		case AIRPLAY_STATE_AUTH:
+			return("Pending PIN or Password");
+		default:
+			return("Illegal state value");
+	}
+}
+
+// Helper to display human readable description of the pairing type
+// @param state the state to get human readable text
+// @returns human readable description of the airplay state
+static const char* airplay_pair_type_str(enum pair_type pair_type) {
+	switch(pair_type) {
+		case PAIR_CLIENT_FRUIT:
+			return("Pair Client Fruit (Apple TV)");
+		case PAIR_CLIENT_HOMEKIT_NORMAL:
+			return("Homekit Normal");
+		case PAIR_CLIENT_HOMEKIT_TRANSIENT:
+			return("Homekit Transient (PIN 3939)");
+		case PAIR_SERVER_HOMEKIT:
+			return("Session Startup Setup");
+		default:
+			return("Illegal pair_type value");
+	}
+}
+
+/*--------------------- Pairing Helpers - some logic sourced from owntones  ------------------------------*/
+
+// Start the RTSP dialogue with the AirPlay device
+// @param p pointer to the airplay client handle
+// @returns true on success, false on failure
+static bool airplay_session_sequence_start(struct airplaycl_s *p) {
+	// To start the dialogue, we send RTSP GET /info to obtain airplay device details 
+	// that will be required in future exchanges and we analyse the statusFlags to
+	// determine the pairing approach required
+	if (!rtspcl_get_info(p->rtspcl, &p->rtsp_response)) {
+		LOG_ERROR("[%p]: cannot get info", p);
+		goto erexit;
+	}
+	if (!strncmp(p->rtsp_response.content_type, AIRPLAY_CONTENT_TYPE_PLIST, 
+		strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
+		LOG_ERROR("%s returned Content-Type %s, but require %s", p->name, 
+			p->rtsp_response.content_type,  AIRPLAY_CONTENT_TYPE_PLIST);
+		goto erexit;
+	}
+	if (!p->rtsp_response.content) {
+		LOG_ERROR("No RTSP content returned from rtspcl_get_info()");
+		goto erexit;
+	}
+	if (!airplaycl_analyse_info(p, (plist_t)p->rtsp_response.content)) {
+		LOG_ERROR("Unable to analyse GET /info plist\n");
+		goto erexit;
+	}
+	if (p->rtsp_response.content) free(p->rtsp_response.content);
+	return true;
+
+erexit:
+	if (p->rtsp_response.content) free(p->rtsp_response.content);
+	return false;
+}
+
 //payload_make_pair_generic(int step, struct evrtsp_request *req, struct airplay_session *rs
 // static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 // {
@@ -1501,11 +1645,11 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 
 	// We need to assess the status flags to determine what the next step should be.
 	// It might make sense to replicate the state machine approach used in owntones
-	LOG_INFO("TODO: Implement a form of state machine logic based upon examination of the status flags");
 	if (p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED) {
-		LOG_INFO("%s:One time pairing still to be implemented - is this based on the secret??", p->name);
-		return false;
-    	// rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+		LOG_INFO("%s:One time pairing still to be fully implemented - is this based on the secret??", p->name);
+    	p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+      	p->state = AIRPLAY_STATE_INFO;
+      	p->next_seq = AIRPLAY_SEQ_PAIR_VERIFY;
 
       	// if (!device->auth_key) {
 		// 	device->requires_auth = 1;
@@ -1513,12 +1657,14 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 	  	// 	return AIRPLAY_SEQ_PIN_START;
 		// }
 
-      	// rs->state = AIRPLAY_STATE_INFO;
-      	// return AIRPLAY_SEQ_PAIR_VERIFY;
+		return true;
     }
   	else if (p->status_flags & AIRPLAY_FLAG_PIN_REQUIRED) {
-		LOG_INFO("%s:PIN entry still to be implemented", p->name);
-		return false;
+		LOG_INFO("%s:PIN entry still to be fully implemented", p->name);
+    	p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+      	p->state = AIRPLAY_STATE_AUTH;
+      	p->next_seq = AIRPLAY_SEQ_PIN_START;
+		return true;
 		// free(device->auth_key);
 		// device->auth_key = NULL;
 		// device->requires_auth = 1;
@@ -1528,11 +1674,21 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 		// return AIRPLAY_SEQ_PIN_START;
     }
 	else if (p->status_flags & AIRPLAY_FLAG_PASSWORD_REQUIRED) {
+		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+      	p->state = AIRPLAY_STATE_AUTH;
 		if (strlen(p->passwd) == 0) {
 			LOG_ERROR("%s:Password authentication required, but none given", p->name);
+			p->next_seq = AIRPLAY_SEQ_ABORT;
 			return false;
 		}
-		LOG_INFO("%s:Password authentication still to be implemented", p->name);
+		else if (p->auth) {
+			LOG_ERROR("Auth key yet to be implemented");
+			p->next_seq = AIRPLAY_SEQ_ABORT;
+			return false;
+
+		}
+		LOG_ERROR("%s:Password authentication still to be implemented", p->name);
+		p->next_seq = AIRPLAY_SEQ_ABORT;
 		return false;
 		// rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
 
@@ -1548,6 +1704,9 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 		// rs->state = AIRPLAY_STATE_INFO;
 		// return AIRPLAY_SEQ_PAIR_VERIFY;
     }
+	p->pair_type = PAIR_CLIENT_HOMEKIT_TRANSIENT;
+	p->state = AIRPLAY_STATE_INFO;
+	p->next_seq = AIRPLAY_SEQ_PAIR_TRANSIENT;
 
 	return true;
 
@@ -1605,28 +1764,14 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	LOG_INFO("[%p]: local interface %s", p, rtspcl_local_ip(p->rtspcl));
 
-	// Now we need to send RTSP GET /info to obtain airplay device details that will
-	// be required in future exchanges 
-	if (!rtspcl_get_info(p->rtspcl, &p->rtsp_response)) {
-		LOG_ERROR("[%p]: cannot get info", p);
+	// RTSP GET /info
+	if (!airplay_session_sequence_start(p)) {
+		LOG_ERROR("Unable to start RTSP session with %s", p->name);
 		goto erexit;
 	}
-
-	if (!strncmp(p->rtsp_response.content_type, AIRPLAY_CONTENT_TYPE_PLIST, 
-		strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
-		LOG_ERROR("%s returned Content-Type %s, but require %s", p->name, 
-			p->rtsp_response.content_type,  AIRPLAY_CONTENT_TYPE_PLIST);
-		goto erexit;
-	}
-	if (!p->rtsp_response.content) {
-		LOG_ERROR("No RTSP content returned from rtspcl_get_info()");
-		goto erexit;
-	}
-	if (!airplaycl_analyse_info(p, (plist_t)p->rtsp_response.content)) {
-		LOG_ERROR("Unable to analyse GET /info plist\n");
-		goto erexit;
-	}
-	if (p->rtsp_response.content) free(p->rtsp_response.content);
+	LOG_DEBUG("%s pair_type = %s", p->name, airplay_pair_type_str(p->pair_type));
+	LOG_DEBUG("%s state = %s", p->name, airplay_state_str(p->state));
+	LOG_DEBUG("%s next_seq = %s", p->name, airplay_seq_type_str(p->next_seq));
 
 	// RTSP pairing verify for AppleTV
 	// if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;

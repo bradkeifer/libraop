@@ -19,7 +19,7 @@ BUILDDIR   = $(dir $(CORE))$(HOST)/$(PLATFORM)
 LIB        = lib/$(HOST)/$(PLATFORM)/libraop.a
 EXECUTABLE = $(CORE)-$(PLATFORM)
 
-DEFINES  = -DNDEBUG -D_GNU_SOURCE
+DEFINES  = -DNDEBUG -D_GNU_SOURCE -DCONFIG_OPENSSL
 CFLAGS  += -Wall -fPIC -ggdb -O2 $(DEFINES) -fdata-sections -ffunction-sections
 LDFLAGS += -lpthread -ldl -lm -lplist -luuid -L.
 
@@ -29,6 +29,7 @@ DMAP_PARSER	= dmap-parser
 MDNS		= libmdns/targets
 CODECS		= libcodecs/targets
 OPENSSL		= libopenssl/targets/$(HOST)/$(PLATFORM)
+PAIR_AP		= pair_ap
 
 vpath %.c $(TOOLS):$(SRC):$(DMAP_PARSER):$(FETCHER)/src:$(PAIR_AP)
 vpath %.cpp $(TOOLS):$(SRC):$(FETCHER)/src
@@ -42,6 +43,7 @@ INCLUDE = -I$(VALGRIND)/memcheck -I$(VALGRIND)/include \
 	  -I$(CODECS)/include/shine -I$(CODECS)/include/faac \
 	  -I$(SRC) -I$(SRC)/inc \
 	  -I$(FETCHER)/include \
+	  -I$(PAIR_AP)
 
 CURVE25519_SOURCES = curve25519_dh.c curve25519_mehdi.c curve25519_order.c curve25519_utils.c custom_blind.c\
                      ed25519_sign.c ed25519_verify.c \
@@ -52,7 +54,8 @@ SOURCES = raop_client.c rtsp_client.c \
 	  aes.c aes_ctr.c \
 	  dmap_parser.c	\
 	  alac.c \
-	  http_fetcher.c http_error_codes.c
+	  http_fetcher.c http_error_codes.c \
+	  pair_fruit.c pair_homekit.c pair-tlv.c pair.c
 
 SOURCES_BIN = cross_log.c cross_ssl.c cross_util.c cross_net.c platform.c cliraop.c
 
