@@ -24,7 +24,6 @@
 #include <plist/plist.h>
 #include "platform.h"
 #include "common.h"
-// #include "rtsp_common.h"
 
 #define AIRPLAY_LATENCY_MIN 11025
 

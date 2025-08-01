@@ -12,8 +12,6 @@
 #define __RTSP_CLIENT_H
 #include <plist/plist.h>	// Required for AirPlay2 message handlers
 
-// #include "rtsp_common.h"
-
 typedef struct sock_info_s {
 	int fd;
 	uint16_t lport;
@@ -25,6 +23,22 @@ typedef struct rtp_port_s {
 	sock_info_t	ctrl;
 	sock_info_t audio;
 } rtp_port_t;
+
+// Added for AirPlay2 support
+
+// Content-Types
+#define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
+#define AIRPLAY_CONTENT_TYPE_OCTET_STREAM		"application/octet-stream"
+
+// This struct provides a means to expose RTSP response data to the airplay sequence handling logic
+typedef struct rtsp_response_s {
+	bool rtsp_response;		// True if we got a RTSP response. False otherwise
+	int status_code;		// The RTSP status code of the response
+	char description[256];	// The description of the status code
+	char content_type[256];	// Make this an enum?
+	int length;				// Length of the response content
+	char **content;			// Memory must be freed by the consumer. Allocation only by AirPlay2 handlers
+} rtsp_response_t;
 
 struct rtspcl_s *rtspcl_create(char* user_name);
 bool   			rtspcl_destroy(struct rtspcl_s *p);
@@ -59,7 +73,7 @@ char* rtspcl_local_ip(struct rtspcl_s *p);
 // @param rplist - if not NULL, the plist will be stored here
 // @param rplen - the length of the returned plist will be stored here. Must be non-NUll if rplist is not NULL.
 // @returns - true on success, false otherwise
-bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen);		
+bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);		
 bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 	char *req_bplist, uint32_t req_bplist_len,
 	plist_t *resp_bplist, uint32_t *resp_plist_len);

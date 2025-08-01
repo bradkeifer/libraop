@@ -361,7 +361,7 @@ typedef struct airplaycl_s {
 	char name[AIRPLAY_NAME_SIZE + 1]; // Added for AirPlay2
 	uint64_t features; // Added for AirPlay2
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
-	// struct rtsp_response_s rtsp_response;	// Added for AirPlay2
+	rtsp_response_t rtsp_response;	// Added for AirPlay2
 
 	/* Pairing, see pair.h  - Added for AirPlay2 */
 	// enum pair_type pair_type;
@@ -1572,8 +1572,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	struct {
 		uint16_t count, offset;
 	} port = { 0 };
-	plist_t pinfo = NULL;
-	int plen = 0;
 
 	if (!p) return false;
 
@@ -1609,26 +1607,26 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	// Now we need to send RTSP GET /info to obtain airplay device details that will
 	// be required in future exchanges 
-	// LOG_DEBUG("p->rtspcl=%p, p->rtsp_response=%p", p->rtspcl, p->rtsp_response);
-	if (!rtspcl_get_info(p->rtspcl, &pinfo, &plen)) {
+	if (!rtspcl_get_info(p->rtspcl, &p->rtsp_response)) {
 		LOG_ERROR("[%p]: cannot get info", p);
 		goto erexit;
 	}
-	// LOG_DEBUG("RTSP/1.0:%s %d %s", p->rtsp_response.rtsp_response ? "true" : "false",
-	// 	p->rtsp_response.status_code, p->rtsp_response.description);
-	// LOG_DEBUG("Content-Type: %s, length %d", p->rtsp_response.content_type,
-	// 	p->rtsp_response.length);
 
-	if (!pinfo) {
-		LOG_ERROR("No plist returned from rtspcl_get_info()");
+	if (!strncmp(p->rtsp_response.content_type, AIRPLAY_CONTENT_TYPE_PLIST, 
+		strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
+		LOG_ERROR("%s returned Content-Type %s, but require %s", p->name, 
+			p->rtsp_response.content_type,  AIRPLAY_CONTENT_TYPE_PLIST);
 		goto erexit;
 	}
-	if (!airplaycl_analyse_info(p, pinfo)) {
+	if (!p->rtsp_response.content) {
+		LOG_ERROR("No RTSP content returned from rtspcl_get_info()");
+		goto erexit;
+	}
+	if (!airplaycl_analyse_info(p, (plist_t)p->rtsp_response.content)) {
 		LOG_ERROR("Unable to analyse GET /info plist\n");
 		goto erexit;
 	}
-	LOG_DEBUG("pinfo (%p), length %d analysed", pinfo, plen);
-	plist_free(pinfo);
+	if (p->rtsp_response.content) free(p->rtsp_response.content);
 
 	// RTSP pairing verify for AppleTV
 	// if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;

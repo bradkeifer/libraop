@@ -55,9 +55,9 @@ typedef struct rtspcl_s {
 	} digest;
 
 	// Added for AirPlay2 support
-	// bool rtsp_response;		// True if we get an RTSP response. False otherwise.
-	// int status_code;		// The RTSP status code of the response
-	// char description[256];	// The description of the status code
+	bool rtsp_response;		// True if we get an RTSP response. False otherwise.
+	int status_code;		// The RTSP status code of the response
+	char description[256];	// The description of the status code
 } rtspcl_t;
 
 // extern log_level 	raop_loglevel;
@@ -72,8 +72,8 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 key_data_t *kd, char **resp_content, int *resp_len,
 			 char* url);
 
-// static void rtspcl_clear_response(rtsp_response_t *r);
-// static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *pkd, rtsp_response_t *resp);
+static void rtspcl_clear_response(rtsp_response_t *response);
+static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -620,9 +620,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	struct pollfd pfds;
 	key_data_t lkd[MAX_KD], *pkd;
 
-	// rtspcld->rtsp_response = false;
-	// rtspcld->status_code = 0;
-	// rtspcld->description[0] = 0;
+	rtspcld->rtsp_response = false;
+	rtspcld->status_code = 0;
+	rtspcld->description[0] = 0;
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
 
@@ -713,7 +713,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	token = strtok(line, delimiters);
 	LOG_DEBUG("token should be RTSP/1.0: %s", token);
 	if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
-		// rtspcld->rtsp_response = true;
+		rtspcld->rtsp_response = true;
 		LOG_DEBUG("Valid RTSP/1.0 Response");
 	}
 	token = strtok(NULL, delimiters);
@@ -721,24 +721,24 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	if (token == NULL || strcmp(token, "200")) {
 		LOG_ERROR("[%p]: <------ : request failed, error %s", rtspcld, line);
 		if (get_response == 1) {
-			// if (token) {
-			// 	rtspcld->status_code = (int)strtol(token, NULL, 10);
-			// 	while ((token = strtok(NULL, delimiters))) {
-			// 		if ((strlen(rtspcld->description) + 
-			// 			strlen(token) < sizeof(rtspcld->description)))
-			// 		strcat(rtspcld->description, token);
-			// 	}
-			// }
+			if (token) {
+				rtspcld->status_code = (int)strtol(token, NULL, 10);
+				while ((token = strtok(NULL, delimiters))) {
+					if ((strlen(rtspcld->description) + 
+						strlen(token) < sizeof(rtspcld->description)))
+					strcat(rtspcld->description, token);
+				}
+			}
 			return false;
 		}
 	} else {
 		LOG_DEBUG("[%p]: <------ : %s: request ok", rtspcld, token);
-		// rtspcld->status_code = (int)strtol(token, NULL, 10);
-		// while ((token = strtok(NULL, delimiters))) {
-		// 	if ((strlen(rtspcld->description) + 
-		// 		strlen(token) < sizeof(rtspcld->description)))
-		// 	strcat(rtspcld->description, token);
-		// }
+		rtspcld->status_code = (int)strtol(token, NULL, 10);
+		while ((token = strtok(NULL, delimiters))) {
+			if ((strlen(rtspcld->description) + 
+				strlen(token) < sizeof(rtspcld->description)))
+			strcat(rtspcld->description, token);
+		}
 	}
 
 	i = 0;
@@ -811,24 +811,26 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 // @param rplist the plist received from the AirPlay device
 // @param rplen the length of the plist received from the AirPlay device
 // @returns true on success, false on failure
-bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
+bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
 	char *resp_content;
 	int resp_len = 0;
 	plist_t pinfo = NULL;
-	key_data_t rkd;
+	key_data_t rkd[MAX_KD] = { 0 };
 
-	// rtspcl_clear_response(resp);
+	rtspcl_clear_response(resp);
 	if (!p) return false;
 
-	LOG_DEBUG("Calling exec_request");
-	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, &rkd, (char **) &resp_content, &resp_len, NULL)) {
+	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
 	}
 
-	// rtspcl_process_header_response(p, &rkd, resp);
-	// LOG_DEBUG("Response status:%d %s", resp->status_code, resp->description);
-	// LOG_DEBUG("Content-Type: %s", resp->content_type);
+	rtspcl_process_header_response(p, rkd, resp);
+
+	if (!strncmp(resp->content_type, AIRPLAY_CONTENT_TYPE_PLIST, strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
+		LOG_ERROR("Expected Content-Type %s, but got %s", AIRPLAY_CONTENT_TYPE_PLIST, resp->content_type);
+		goto erexit;
+	}
 
 	plist_from_bin(resp_content, resp_len, &pinfo);
 
@@ -836,22 +838,19 @@ bool rtspcl_get_info(struct rtspcl_s *p, plist_t *rplist, int *rplen) {
 		LOG_ERROR("Unable to extract plist from GET /info response.\n");
 		goto erexit;
 	}
-	*rplist = pinfo;
-	*rplen = resp_len;
-	// resp->length = resp_len;
-	// if (!(resp->content = malloc(resp_len))) {
-	// 	LOG_ERROR("Unable to allocate memory for response content. %s", strerror(errno));
-	// 	goto erexit;
-	// }
-	// memcpy(resp->content, pinfo, resp_len);
-	kd_free(&rkd);
-	free(resp_content);
+	resp->length = resp_len;
+	if (!(resp->content = malloc(resp_len))) {
+		LOG_ERROR("Unable to allocate memory for response content. %s", strerror(errno));
+		goto erexit;
+	}
+	memcpy(resp->content, pinfo, resp_len);
+	if (rkd[0].key) kd_free(rkd);
+	if (resp->content) free(resp_content);
 	return true;
 
   erexit:
-	kd_free(&rkd);
-	free(resp_content);
-	plist_free(pinfo);
+	if (rkd[0].key) kd_free(rkd);
+	if (resp->content) free(resp_content);
 	return false;
 }
 
@@ -872,44 +871,44 @@ bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
 
 // // Clears the RTSP response data from the RTSP client handle
 // // @param response pointer to the RTSP response handle
-// static void rtspcl_clear_response(rtsp_response_t *response) {
-// 	LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
-// 	LOG_DEBUG("response->content = %p, %s", response->content, response->content);
-// 	response->rtsp_response = false;
-// 	response->status_code = 0;
-// 	response->description[0] = 0;
-// 	response->content_type[0] = 0;
-// 	response->length = 0;
-// 	if (response->content) free(response->content); // In case prior consumer did not free
-// 	response->content = NULL;
-// 	return;
-// }
+static void rtspcl_clear_response(rtsp_response_t *response) {
+	LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
+	LOG_DEBUG("response->content = %p, %s", response->content, response->content);
+	response->rtsp_response = false;
+	response->status_code = 0;
+	response->description[0] = 0;
+	response->content_type[0] = 0;
+	response->length = 0;
+	if (response->content) free(response->content); // In case prior consumer did not free
+	response->content = NULL;
+	return;
+}
 
 // // Extracts the RTSP response header information required for the AirPlay2 functions
 // // @note Extraction of the response content is beyond the scope of this function
 // // @param p pointer to the RTSP client handle
 // // @param pkd the RTSP response header key data
 // // @param resp pointer to the RTSP response data to be stored
-// static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *pkd, rtsp_response_t *resp) {
-// 	if (p == NULL) {
-// 		LOG_ERROR("No RTSP client handle");
-// 		return;
-// 	}
-// 	resp->rtsp_response = p->rtsp_response;
-// 	resp->status_code = p->status_code;
-// 	strncpy(resp->description, p->description, sizeof(resp->description));
-// 	if (pkd == NULL) {
-// 		LOG_WARN("No key data in RTSP response header");
-// 		return;
-// 	}
+static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp) {
+	if (p == NULL) {
+		LOG_ERROR("No RTSP client handle");
+		return;
+	}
+	resp->rtsp_response = p->rtsp_response;
+	resp->status_code = p->status_code;
+	strncpy(resp->description, p->description, sizeof(resp->description));
+	if (kd == NULL) {
+		LOG_WARN("No key data in RTSP response header");
+		return;
+	}
 
-// 	// work through the key data and extract the items relevant for AirPlay2 sequencing logic
-// 	while (pkd->key) {
-// 		LOG_DEBUG("key: %s, data: %s", pkd->key, pkd->data);
-// 		if (strncmp(pkd->key, "Content-Type", strlen("Content-Type")) == 0)
-// 			strncpy(resp->content_type, pkd->data, sizeof(resp->content_type));
-// 		(void)*pkd++;
-// 	}
+	// work through the key data and extract the items relevant for AirPlay2 sequencing logic
+	while (kd->key) {
+		LOG_DEBUG("key: %s, data: %s", kd->key, kd->data);
+		if (strncmp(kd->key, "Content-Type", strlen("Content-Type")) == 0)
+			strncpy(resp->content_type, kd->data, sizeof(resp->content_type));
+		(void)*kd++;
+	}
 
-// 	return;
-//}
+	return;
+}
