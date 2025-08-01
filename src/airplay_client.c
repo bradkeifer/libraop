@@ -19,6 +19,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "platform.h"
 
 #include <openssl/rand.h>
@@ -40,6 +41,8 @@
 #include "airplay_client.h"
 #include "aes.h"
 #include "pair.h"
+
+#define AIRPLAY_MAX_RTSP_PAYLOAD	256		// Maximum size of message payload supported by this implementation
 
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
@@ -161,6 +164,11 @@ enum airplay_status_flags
 #define AIRPLAY_MSEC(ntp)  ((uint32_t) ((((ntp) >> 16)*1000) >> 16))
 
 /* -------------------- MISC GLOBALS derived from owntone ------------------------------ */
+
+typedef struct rtsp_payload {
+	char mem[AIRPLAY_MAX_RTSP_PAYLOAD];
+	size_t length;
+} rtsp_payload_t;
 
 // @todo Copied from owntones codebase - not sure if this is required for us
 #if AIRPLAY_USE_AUTH_SETUP
@@ -363,6 +371,7 @@ typedef struct airplaycl_s {
 	uint64_t features; // Added for AirPlay2
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
+	rtsp_payload_t rtsp_request_payload;
 
 	/* Pairing, see pair.h  - Added for AirPlay2 */
 
@@ -371,6 +380,7 @@ typedef struct airplaycl_s {
 	struct pair_verify_context *pair_verify_ctx;
 	struct pair_setup_context *pair_setup_ctx;
 	enum airplay_seq_type next_seq;
+
 
 } airplaycl_data_t;
 
@@ -384,12 +394,16 @@ static int 	safe_hextou64(const char *str, uint64_t *val);
 static void uuid_make(char *str);
 // static void device_id_colon_make(char *id_str, int size, uint64_t id);
 static int 	device_id_colon_parse(uint64_t *id, const char *id_str);
+static void hexdump(const char *msg, uint8_t *mem, size_t len);
 
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
 static const char* airplay_seq_type_str(enum airplay_seq_type seq);
 static const char* airplay_state_str(enum airplay_state state);
 static const char* airplay_pair_type_str(enum pair_type pair_type);
+
+static bool airplay_payload_clean(struct airplaycl_s *p);
+static bool airplay_payload_add(struct airplaycl_s *p, const void *data, size_t data_len);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -510,6 +524,44 @@ static int device_id_colon_parse(uint64_t *id, const char *id_str)
 	return ret;
 }
 
+// Prints a hexdump of binary data to stdout
+// @param msg a heading message, if required
+// mem pointer to the binary data to hexdump
+// len length of data to hexdump
+static void hexdump(const char *msg, uint8_t *mem, size_t len)
+{
+  int i, j;
+  int hexdump_cols = 16;
+
+  if (msg)
+    printf("%s", msg);
+
+  for (i = 0; i < len + ((len % hexdump_cols) ? (hexdump_cols - len % hexdump_cols) : 0); i++)
+    {
+      if(i % hexdump_cols == 0)
+	printf("0x%06x: ", i);
+
+      if (i < len)
+	printf("%02x ", 0xFF & ((char*)mem)[i]);
+      else
+	printf("   ");
+
+      if (i % hexdump_cols == (hexdump_cols - 1))
+	{
+	  for (j = i - (hexdump_cols - 1); j <= i; j++)
+	    {
+	      if (j >= len)
+		putchar(' ');
+	      else if (isprint(((char*)mem)[j]))
+		putchar(0xFF & ((char*)mem)[j]);
+	      else
+		putchar('.');
+	    }
+
+	  putchar('\n');
+	}
+    }
+}
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
 // Helper to display human readable sequence type
@@ -604,6 +656,40 @@ static const char* airplay_pair_type_str(enum pair_type pair_type) {
 	}
 }
 
+// Clean/reset the RTSP request payload buffer
+// @param p the AirPlay client handle
+// @returns true on success, false on failure
+static bool airplay_payload_clean(struct airplaycl_s *p) {
+	if (!p) {
+		LOG_ERROR("Invalid Airplay client handle");
+		return false;
+	}
+	p->rtsp_request_payload.length = 0;
+	memset(p->rtsp_request_payload.mem, 0, AIRPLAY_MAX_RTSP_PAYLOAD);
+	LOG_DEBUG("RTSP request payload cleaned %c, length %d",
+		p->rtsp_request_payload.mem[0],
+		p->rtsp_request_payload.length);
+	return true;
+}
+
+static bool airplay_payload_add(struct airplaycl_s *p, const void *data, size_t data_len) {
+	if (!p || !data || data_len == 0) {
+		LOG_ERROR("Invalid paramaters");
+		return false;
+	}
+	LOG_DEBUG("Adding %d bytes to existing payload of length %d", 
+		data_len, p->rtsp_request_payload.length);
+	if ((p->rtsp_request_payload.length + data_len) > AIRPLAY_MAX_RTSP_PAYLOAD) {
+		LOG_ERROR("Payload add would cause overflow. %d + %d > %d",
+			p->rtsp_request_payload.length, data_len, AIRPLAY_MAX_RTSP_PAYLOAD);
+		return false;
+	}
+	memcpy(&p->rtsp_request_payload.mem[p->rtsp_request_payload.length], data, data_len);
+	p->rtsp_request_payload.length += data_len;
+	LOG_DEBUG("RTSP payload now %d bytes", p->rtsp_request_payload.length);
+	return true;
+}
+
 /*--------------------- Pairing Helpers - some logic sourced from owntones  ------------------------------*/
 
 // Start the RTSP dialogue with the AirPlay device
@@ -678,6 +764,10 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 	}
 
 	LOG_INFO("TODO: Implement a method to update the RTSP output buffer with %s", body);
+	LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
+	hexdump("Output buffer\n", body, len);
+	LOG_DEBUG("errmsg is %s", errmsg);
+	airplay_payload_add(p, body, len);
 	//   evbuffer_add(req->output_buffer, body, len);
 	free(body);
 
@@ -708,7 +798,6 @@ static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
 	device_id_colon_parse(&device_id, p->device_id);
 	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
 
-	LOG_INFO("TODO: Implement entry into pair_ap library");
 	p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
 	if (!p->pair_setup_ctx) {
 		LOG_ERROR("Out of memory for verification setup context");
@@ -1777,6 +1866,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	LOG_DEBUG("%s state = %s", p->name, airplay_state_str(p->state));
 	LOG_DEBUG("%s next_seq = %s", p->name, airplay_seq_type_str(p->next_seq));
 	// TODO <@bradkeifer> work out if to implement response_handler_info_start()
+	airplay_payload_clean(p);
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
