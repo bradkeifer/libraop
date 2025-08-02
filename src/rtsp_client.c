@@ -38,6 +38,18 @@
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
 
+typedef struct rtsp_cipher_s {
+	bool enabled;			// true if ciphering is required/enabled
+	void *cb;				// ciphering callback function
+	struct pair_cipher_context *ctx; // cipher context - airplay2
+} rtsp_cipher_t;
+
+// Ciphering Buffer
+struct cipher_buffer_s {
+	uint8_t *data;
+	size_t	length;
+} cipher_buffer_t;
+
 typedef struct rtspcl_s {
     int fd;
     char url[128];
@@ -55,6 +67,7 @@ typedef struct rtspcl_s {
 	bool rtsp_response;		// True if we get an RTSP response. False otherwise.
 	int status_code;		// The RTSP status code of the response
 	char description[256];	// The description of the status code
+	rtsp_cipher_t cipher;	// Ciphering details
 } rtspcl_t;
 
 // extern log_level 	raop_loglevel;
@@ -72,6 +85,7 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 static void rtspcl_clear_response(rtsp_response_t *response);
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
 static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp);
+static int rtsp_cipher(struct rtspcl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -963,4 +977,68 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 	resp->length = len;
 
 	return;
+}
+
+
+// Encrypts or Decrypts RTSP data
+// @param p the AirPlay2 Session Client handle
+// @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
+// @param inbuf the data to be encrypted/decrypted
+// @param encrypt encryption if value os non-zero, decryption if value is zero.
+static int rtsp_cipher(rtspcl_t *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
+{
+	uint8_t *in = inbuf->data;
+	size_t in_len = inbuf->length;
+	uint8_t *out = NULL;
+	size_t out_len = 0;
+	ssize_t processed;
+
+	// I think we need to remove the static declaration from this function definition, because it will be
+	// called by the exec_request() in rtsp_client.c
+	// Perhaps the function declaration should be moved to rtsp_client.c??
+	// The session handle probably needs to become an RTSP session handle, rather than the AirPlay2 session handle
+	// in = evbuffer_pullup(inbuf, -1);
+	// in_len = evbuffer_get_length(inbuf);
+
+	if (encrypt) {
+#if AIRPLAY_DUMP_TRAFFIC
+		if (in_len < 4096) {
+			hexdump("Encrypting outgoing request\n", in, in_len);
+		}
+		else {
+			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
+		}
+#endif
+
+		processed = pair_encrypt(&out, &out_len, in, in_len, p->cipher.ctx);
+		if (processed < 0) {
+			goto error;
+		}
+	}
+	else {
+		processed = pair_decrypt(&out, &out_len, in, in_len, p->cipher.ctx);
+		if (processed < 0) {
+			goto error;
+		}
+
+#if AIRPLAY_DUMP_TRAFFIC
+		if (out_len < 4096) {
+			hexdump("Decrypted incoming response\n", out, out_len);
+		}
+		else {
+			LOG_DEBUG("Decrypted incoming response (size %zu)\n", out_len);
+		}
+#endif
+	}
+
+	// evbuffer_drain(inbuf, processed);
+	// evbuffer_add(outbuf, out, out_len);
+
+	return 0;
+
+error:
+	LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
+		in_len, pair_cipher_errmsg(p->cipher.ctx));
+
+	return -1;
 }

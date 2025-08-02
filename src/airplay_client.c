@@ -317,12 +317,6 @@ typedef struct {
 } __attribute__ ((packed)) rtp_lost_pkt_t;
 
 
-// Ciphering Buffer
-struct cipher_buffer_s {
-	uint8_t *data;
-	size_t	length;
-} cipher_buffer_t;
-
 // AirPlay session handle
 typedef struct airplaycl_s {
 	struct rtspcl_s *rtspcl;
@@ -379,6 +373,7 @@ typedef struct airplaycl_s {
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
 	rtsp_request_t rtsp_request;	// Added for AirPlay2
+	// rtsp_cipher_t rtsp_cipher;		// Added for AirPlay2
 
 	enum pair_type pair_type;	// Added for AirPlay 2
 	struct pair_cipher_context *control_cipher_ctx; // control cipher context - airplay2
@@ -441,10 +436,9 @@ static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p)
 /*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
 
 static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_t key_len);
-static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
 static void chacha_close(gcry_cipher_hd_t hd);
 static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
-static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd);
+// static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd);
 
 
 /*----------------------- AirPlay Client Data Management ------------------*/
@@ -1170,10 +1164,7 @@ static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 	}
 
 
-	// TODO: Implement ciphering code from owntones
-	LOG_WARN("session_cipher_setup implementation is required");
-	// ret = session_cipher_setup(rs, result->shared_secret, result->shared_secret_len);
-	ret = -1;
+	ret = session_cipher_setup(p, result->shared_secret, result->shared_secret_len);
 	if (ret < 0) {
 		LOG_ERROR("Pair transient error setting up encryption for '%s'\n", p->name);
 		goto error;
@@ -1280,65 +1271,6 @@ static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_
 	return -1;
 }
 
-// Encrypts or Decrypts RTSP data
-// @param p the AirPlay2 Session Client handle
-// @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
-// @param inbuf the data to be encrypted/decrypted
-// @param encrypt encryption if value os non-zero, decryption if value is zero.
-static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
-{
-	uint8_t *in;
-	size_t in_len;
-	uint8_t *out = NULL;
-	size_t out_len = 0;
-	ssize_t processed;
-
-	// in = evbuffer_pullup(inbuf, -1);
-	// in_len = evbuffer_get_length(inbuf);
-
-	if (encrypt) {
-#if AIRPLAY_DUMP_TRAFFIC
-		if (in_len < 4096) {
-			hexdump("Encrypting outgoing request\n", in, in_len);
-		}
-		else {
-			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
-		}
-#endif
-
-		processed = pair_encrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
-		if (processed < 0) {
-			goto error;
-		}
-	}
-	else {
-		processed = pair_decrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
-		if (processed < 0) {
-			goto error;
-		}
-
-#if AIRPLAY_DUMP_TRAFFIC
-		if (out_len < 4096) {
-			hexdump("Decrypted incoming response\n", out, out_len);
-		}
-		else {
-			LOG_DEBUG("Decrypted incoming response (size %zu)\n", out_len);
-		}
-#endif
-	}
-
-	// evbuffer_drain(inbuf, processed);
-	// evbuffer_add(outbuf, out, out_len);
-
-	return 0;
-
-error:
-	LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
-		in_len, pair_cipher_errmsg(p->control_cipher_ctx));
-
-	return -1;
-}
-
 static void chacha_close(gcry_cipher_hd_t hd)
 {
 	if (!hd)
@@ -1366,26 +1298,26 @@ error:
 	return NULL;
 }
 
-static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd)
-{
-	if (gcry_cipher_setiv(hd, nonce, nonce_len) != GPG_ERR_NO_ERROR) {
-		return -1;
-	}
+// static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd)
+// {
+// 	if (gcry_cipher_setiv(hd, nonce, nonce_len) != GPG_ERR_NO_ERROR) {
+// 		return -1;
+// 	}
 
-	if (gcry_cipher_authenticate(hd, ad, ad_len) != GPG_ERR_NO_ERROR) {
-		return -1;
-	}
+// 	if (gcry_cipher_authenticate(hd, ad, ad_len) != GPG_ERR_NO_ERROR) {
+// 		return -1;
+// 	}
 
-	if (gcry_cipher_encrypt(hd, cipher, plain_len, plain, plain_len) != GPG_ERR_NO_ERROR) {
-		return -1;
-	}
+// 	if (gcry_cipher_encrypt(hd, cipher, plain_len, plain, plain_len) != GPG_ERR_NO_ERROR) {
+// 		return -1;
+// 	}
 
-	if (gcry_cipher_gettag(hd, tag, tag_len) != GPG_ERR_NO_ERROR) {
-		return -1;
-	}
+// 	if (gcry_cipher_gettag(hd, tag, tag_len) != GPG_ERR_NO_ERROR) {
+// 		return -1;
+// 	}
 
-	return 0;
-}
+// 	return 0;
+// }
 
 
 /*----------------------------------------------------------------------------*/

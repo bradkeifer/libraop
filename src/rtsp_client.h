@@ -12,6 +12,8 @@
 #define __RTSP_CLIENT_H
 #include <plist/plist.h>	// Required for AirPlay2 message handlers
 
+#include "pair.h"
+
 #define MAX_KD 64
 
 typedef struct sock_info_s {
@@ -66,8 +68,8 @@ typedef struct rtsp_response_s {
 	int status_code;		// The RTSP status code of the response
 	char description[256];	// The description of the status code
 	char content_type[256];	// Make this an enum?
-	int length;				// Length of the response content
-	char **content;			// Memory must be freed by the consumer. Allocation only by AirPlay2 handlers
+	int length;				// Length of the response body
+	char **content;			// Response body. Memory must be freed by the consumer. Allocation only by AirPlay2 handlers
 } rtsp_response_t;
 
 struct rtspcl_s *rtspcl_create(char* user_name);
