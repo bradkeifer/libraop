@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <plist/plist.h>	// Required for AirPlay2 message handling
 #include <uuid/uuid.h>
+#include <gcrypt.h>
 
 #include "alac_wrapper.h"
 #include "cross_net.h"
@@ -63,11 +64,16 @@
 #define AIRPLAY_PLIST_TIMING_PORT 					"timingPort"
 #define AIRPLAY_PLIST_TIMING_PROTOCOL 				"timingProtocol"
 
-// Miscellaneous max sizes for char fields
+// Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
 #define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
 
 // from owntones
+
+// For transient pairing the key_len will be 64 bytes, but only 32 are used for
+// audio payload encryption. For normal pairing the key is 32 bytes.
+#define AIRPLAY_AUDIO_KEY_LEN 32
+
 // Session is starting up
 #define AIRPLAY_STATE_F_STARTUP    (1 << 13)
 // Streaming is up (connection established)
@@ -294,7 +300,7 @@ static const struct features_type_map features_map[] =
 */
 
 
-// all the following must be 32-bits aligned
+// all the following must be 32-bits aligned 
 
 typedef struct {
 	rtp_header_t hdr;
@@ -310,6 +316,14 @@ typedef struct {
 	uint16_t n;
 } __attribute__ ((packed)) rtp_lost_pkt_t;
 
+
+// Ciphering Buffer
+struct cipher_buffer_s {
+	uint8_t *data;
+	size_t	length;
+} cipher_buffer_t;
+
+// AirPlay session handle
 typedef struct airplaycl_s {
 	struct rtspcl_s *rtspcl;
 	airplay_state_t raop_state; // TODO <@bradkeifer> - seek to eliminate or homogenise with airplay_state
@@ -358,7 +372,7 @@ typedef struct airplaycl_s {
 	char passwd[64];
 
 	char session_uuid[37];	// Added for AirPlay2
-	uint64_t status_flags;	// Added for AirPlay2 - double check they are required once implementation is working
+	uint64_t status_flags;	// Added for AirPlay2
 	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
 	char name[AIRPLAY_NAME_SIZE + 1]; // Added for AirPlay2
 	uint64_t features; // Added for AirPlay2
@@ -366,13 +380,16 @@ typedef struct airplaycl_s {
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
 	rtsp_request_t rtsp_request;	// Added for AirPlay2
 
-	/* Pairing, see pair.h  - Added for AirPlay2 */
-
-	enum pair_type pair_type;
-	struct pair_cipher_context *control_cipher_ctx;
-	struct pair_verify_context *pair_verify_ctx;
-	struct pair_setup_context *pair_setup_ctx;
+	enum pair_type pair_type;	// Added for AirPlay 2
+	struct pair_cipher_context *control_cipher_ctx; // control cipher context - airplay2
+	struct pair_verify_context *pair_verify_ctx; // pair-verify context - airplay 2
+	struct pair_setup_context *pair_setup_ctx; // pair-setup context - airplay 2
 	enum airplay_seq_type next_seq;
+
+	uint8_t shared_secret[64];
+	size_t	shared_secret_len;	// Length of shared secret
+
+	gcry_cipher_hd_t packet_cipher_hd; // packet cipher context - airplay 2
 
 } airplaycl_data_t;
 
@@ -408,16 +425,27 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
+static bool airplay_session_sequence_start(struct airplaycl_s *p);
+
 static int payload_make_pair_generic(struct airplaycl_s *p, int step);
 static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg);
-
-/*----------------------- RTSP Session Management --------------------------*/
+static int payload_make_pair_setup2(struct airplaycl_s *p, void* arg);
+static int payload_make_pair_setup3(struct airplaycl_s *p, void* arg);
 
 static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
 
-static bool airplay_session_sequence_start(struct airplaycl_s *p);
+/*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
+
+static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_t key_len);
+static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
+static void chacha_close(gcry_cipher_hd_t hd);
+static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
+static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd);
+
 
 /*----------------------- AirPlay Client Data Management ------------------*/
 
@@ -715,10 +743,10 @@ static bool airplay_rtsp_command_add(struct airplaycl_s *p, char *command) {
 		return false;
 	}
 
-	if (p->rtsp_request.command && strlen(p->rtsp_request.command)) {
-		LOG_ERROR("Command already defined: %s", p->rtsp_request.command);
-		return false;
-	}
+	// if (p->rtsp_request.command && strlen(p->rtsp_request.command)) {
+	// 	LOG_ERROR("Command already defined: %s", p->rtsp_request.command);
+	// 	return false;
+	// }
 
 	p->rtsp_request.command= strdup(command);
 	if (p->rtsp_request.command == (char *)NULL) {
@@ -741,6 +769,7 @@ static bool airplay_rtsp_content_type_clean(struct airplaycl_s *p) {
 	}
 
 	free(p->rtsp_request.content_type);
+	// *p->rtsp_request.content_type = '\0';
 
 	return true;
 }
@@ -751,10 +780,10 @@ static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_t
 		return false;
 	}
 
-	if (p->rtsp_request.content_type && strlen(p->rtsp_request.content_type)) {
-		LOG_ERROR("Content Type already defined: %s", p->rtsp_request.content_type);
-		return false;
-	}
+	// if (p->rtsp_request.content_type && strlen(p->rtsp_request.content_type)) {
+	// 	LOG_ERROR("Content Type already defined: %s", p->rtsp_request.content_type);
+	// 	return false;
+	// }
 
 	p->rtsp_request.content_type= strdup(content_type);
 	if (p->rtsp_request.content_type == (char *)NULL) {
@@ -946,14 +975,14 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 			body    = pair_setup_request1(&len, p->pair_setup_ctx);
 			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
 			break;
-			//   case 2:
-			// body    = pair_setup_request2(&len, p->pair_setup_ctx);
-			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-			// break;
-			//   case 3:
-			// body    = pair_setup_request3(&len, p->pair_setup_ctx);
-			// errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-			// break;
+		case 2:
+			body    = pair_setup_request2(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+		case 3:
+			body    = pair_setup_request3(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
 			//   case 4:
 			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
 			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
@@ -1023,6 +1052,20 @@ static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
 	return payload_make_pair_generic(p, 1);
 }
 
+static int
+payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
+{
+	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+	return payload_make_pair_generic(p, 2);
+}
+
+static int
+payload_make_pair_setup3(struct airplaycl_s *p, void *arg)
+{
+	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+	return payload_make_pair_generic(p, 3);
+}
+
 // Maybe implement this to replace logic coded in airplaycl_connect()??
 static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 {
@@ -1039,31 +1082,28 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
 {
-	// uint8_t *response;
+	uint8_t *response;
 	const char *errmsg;
-	// size_t len;
+	size_t len;
 	int ret;
 
-	LOG_INFO("TODO: Get the response data");
-	// response = evbuffer_pullup(req->input_buffer, -1);
-	// len = evbuffer_get_length(req->input_buffer);
+	response = (uint8_t *)p->rtsp_response.content;
+	len = p->rtsp_response.length;
+	LOG_INFO("Response data length is %d", len);
 
 	switch (step) {
 		case 1:
-			LOG_INFO("TODO: Build handler connection to pair_ap library");
-			ret = 1;
-			errmsg = "Not yet implemented";
-		// 	ret = pair_setup_response1(rs->pair_setup_ctx, response, len);
-		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
+			ret = pair_setup_response1(p->pair_setup_ctx, response, len);
+			errmsg = pair_setup_errmsg(p->pair_setup_ctx);
 			break;
-		// case 2:
-		// 	ret = pair_setup_response2(rs->pair_setup_ctx, response, len);
-		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
-		// 	break;
-		// case 3:
-		// 	ret = pair_setup_response3(rs->pair_setup_ctx, response, len);
-		// 	errmsg = pair_setup_errmsg(rs->pair_setup_ctx);
-		// 	break;
+		case 2:
+			ret = pair_setup_response2(p->pair_setup_ctx, response, len);
+			errmsg = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+		case 3:
+			ret = pair_setup_response3(p->pair_setup_ctx, response, len);
+			errmsg = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
 		// case 4:
 		// 	ret = pair_verify_response1(rs->pair_verify_ctx, response, len);
 		// 	errmsg = pair_verify_errmsg(rs->pair_verify_ctx);
@@ -1079,7 +1119,7 @@ static enum airplay_seq_type response_handler_pair_generic(int step, struct airp
 
 	if (ret < 0) {
 		LOG_ERROR("Pairing step %d response from '%s' error: %s", step, p->name, errmsg);
-		// DHEXDUMP(E_DBG, L_AIRPLAY, response, len, "Raw response");
+		hexdump("Raw response", response, len);
 		return AIRPLAY_SEQ_ABORT;
 	}
 
@@ -1088,25 +1128,265 @@ static enum airplay_seq_type response_handler_pair_generic(int step, struct airp
 
 static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 {
-	// struct output_device *device;
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
+		p->rtsp_response.status_code == RTSP_CONNECTION_AUTH_REQUIRED) {
 
-	LOG_INFO("TODO: Check the RTSP response code to see if PIN is required. Assuming No for the moment");
-	// if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
-	// 	p->rtspcl->response_code == RTSP_CONNECTION_AUTH_REQUIRED) {
+		// I suspect this deals with the case where the device is removed by owntones.
+		// Not sure if there is a MASS equivalent?
+		// device = outputs_device_get(rs->device_id);
+		// if (!device)
+		// 	return AIRPLAY_SEQ_ABORT;
 
-	// 	// I suspect this deals with the case where the device is removed by owntones.
-	// 	// device = outputs_device_get(rs->device_id);
-	// 	// if (!device)
-	// 	// 	return AIRPLAY_SEQ_ABORT;
+		if (!p->auth) {
+			LOG_WARN("%s defined as not requiring authorisation, but it does", p->name);
+			p->auth = true;
+		}
+		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
 
-	// 	device->requires_auth = 1; // FIXME might be reset by mdns announcement
-	// 	rs->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
-
-	// 	return AIRPLAY_SEQ_PIN_START;
-	// }
+		return AIRPLAY_SEQ_PIN_START;
+	}
 
 	return response_handler_pair_generic(1, p);
 }
+
+
+static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
+{
+	enum airplay_seq_type seq_type;
+	struct pair_result *result;
+	int ret;
+
+	seq_type = response_handler_pair_generic(2, p);
+	if (seq_type != AIRPLAY_SEQ_CONTINUE)
+	return seq_type;
+
+	if (p->pair_type != PAIR_CLIENT_HOMEKIT_TRANSIENT)
+	return seq_type;
+
+	ret = pair_setup_result(NULL, &result, p->pair_setup_ctx);
+	if (ret < 0) {
+		LOG_ERROR("Transient setup result error: %s\n", pair_setup_errmsg(p->pair_setup_ctx));
+		goto error;
+	}
+
+
+	// TODO: Implement ciphering code from owntones
+	LOG_WARN("session_cipher_setup implementation is required");
+	// ret = session_cipher_setup(rs, result->shared_secret, result->shared_secret_len);
+	ret = -1;
+	if (ret < 0) {
+		LOG_ERROR("Pair transient error setting up encryption for '%s'\n", p->name);
+		goto error;
+	}
+
+	return AIRPLAY_SEQ_CONTINUE;
+
+error:
+	p->state = AIRPLAY_STATE_FAILED;
+	return AIRPLAY_SEQ_ABORT;
+}
+
+static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p)
+{
+	// struct output_device *device;
+	const char *authorization_key;
+	enum airplay_seq_type seq_type;
+	int ret;
+
+	seq_type = response_handler_pair_generic(3, p);
+	if (seq_type != AIRPLAY_SEQ_CONTINUE)
+	return seq_type;
+
+	ret = pair_setup_result(&authorization_key, NULL, p->pair_setup_ctx);
+	if (ret < 0) {
+		LOG_ERROR("Pair setup result error: %s\n", pair_setup_errmsg(p->pair_setup_ctx));
+		return AIRPLAY_SEQ_ABORT;
+	}
+
+	LOG_INFO("Pair setup stage complete, saving authorization key\n");
+
+	//   device = outputs_device_get(rs->device_id);
+	//   if (!device)
+	//     return AIRPLAY_SEQ_ABORT;
+
+	LOG_WARN("Implement a method to save the authorization key for future use");
+	// free(device->auth_key);
+	// device->auth_key = strdup(authorization_key);
+
+	// A blocking db call... :-~
+	// db_speaker_save(device);
+
+	// No longer AIRPLAY_STATE_AUTH
+	p->state = AIRPLAY_STATE_STOPPED;
+
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
+/*----------------------- Session Ciphering / Encryption Helpers --------------------------*/
+
+
+// Setup cipher contexts and details, namely the shared secret, control cipher context (used for RTSP?)
+// and the packet cipher context (used for streaming?)
+// @param p the AirPlay 2 session client handle
+// @param key the shared secret key
+// @param key_len the shared secret key length 
+// @returns 0 on success, -1 on failure
+static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_t key_len)
+{
+	struct pair_cipher_context *control_cipher_ctx = NULL;
+	gcry_cipher_hd_t packet_cipher_hd = NULL;
+
+	// For transient pairing the key_len will be 64 bytes, and rs->shared_secret is 32 bytes
+	if (key_len < AIRPLAY_AUDIO_KEY_LEN || key_len > sizeof(p->shared_secret))
+	{
+		LOG_ERROR("Ciphering setup error: Unexpected key length (%zu)\n", key_len);
+		goto error;
+	}
+
+	p->shared_secret_len = key_len;
+	memcpy(p->shared_secret, key, key_len);
+
+	control_cipher_ctx = pair_cipher_new(p->pair_type, 0, key, key_len);
+	if (!control_cipher_ctx)
+	{
+		LOG_ERROR("Could not create control ciphering context\n");
+		goto error;
+	}
+
+	packet_cipher_hd = chacha_open(p->shared_secret, AIRPLAY_AUDIO_KEY_LEN);
+	if (!packet_cipher_hd)
+	{
+		LOG_ERROR("Could not create packet ciphering handle\n");
+		goto error;
+	}
+
+	LOG_DEBUG("Ciphering setup of '%s' completed succesfully, now using encrypted mode\n", p->name);
+
+	p->state = AIRPLAY_STATE_ENCRYPTED;
+	p->control_cipher_ctx = control_cipher_ctx;
+	p->packet_cipher_hd = packet_cipher_hd;
+
+	LOG_INFO("Need to implement the equivalent of a event driven RTSP callback for rtsp_cipher");
+	// evrtsp_connection_set_ciphercb(rs->ctrl, rtsp_cipher, rs);
+	// r->ctrl is of type struct evrtsp_connection - perhaps equiavlent to our p->rtspcl handle
+	// rtsp_cipher is presumably a callback function
+	// rs is the airplay client session handle
+
+	return 0;
+
+	error:
+	pair_cipher_free(control_cipher_ctx);
+	chacha_close(packet_cipher_hd);
+	return -1;
+}
+
+// Encrypts or Decrypts RTSP data
+// @param p the AirPlay2 Session Client handle
+// @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
+// @param inbuf the data to be encrypted/decrypted
+// @param encrypt encryption if value os non-zero, decryption if value is zero.
+static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
+{
+	uint8_t *in;
+	size_t in_len;
+	uint8_t *out = NULL;
+	size_t out_len = 0;
+	ssize_t processed;
+
+	// in = evbuffer_pullup(inbuf, -1);
+	// in_len = evbuffer_get_length(inbuf);
+
+	if (encrypt) {
+#if AIRPLAY_DUMP_TRAFFIC
+		if (in_len < 4096) {
+			hexdump("Encrypting outgoing request\n", in, in_len);
+		}
+		else {
+			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
+		}
+#endif
+
+		processed = pair_encrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
+		if (processed < 0) {
+			goto error;
+		}
+	}
+	else {
+		processed = pair_decrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
+		if (processed < 0) {
+			goto error;
+		}
+
+#if AIRPLAY_DUMP_TRAFFIC
+		if (out_len < 4096) {
+			hexdump("Decrypted incoming response\n", out, out_len);
+		}
+		else {
+			LOG_DEBUG("Decrypted incoming response (size %zu)\n", out_len);
+		}
+#endif
+	}
+
+	// evbuffer_drain(inbuf, processed);
+	// evbuffer_add(outbuf, out, out_len);
+
+	return 0;
+
+error:
+	LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
+		in_len, pair_cipher_errmsg(p->control_cipher_ctx));
+
+	return -1;
+}
+
+static void chacha_close(gcry_cipher_hd_t hd)
+{
+	if (!hd)
+	return;
+
+	gcry_cipher_close(hd);
+}
+
+static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len)
+{
+	gcry_cipher_hd_t hd;
+
+	if (gcry_cipher_open(&hd, GCRY_CIPHER_CHACHA20, GCRY_CIPHER_MODE_POLY1305, 0) != GPG_ERR_NO_ERROR) {
+		goto error;
+	}
+
+	if (gcry_cipher_setkey(hd, key, key_len) != GPG_ERR_NO_ERROR) {
+		goto error;
+	}
+
+	return hd;
+
+error:
+	chacha_close(hd);
+	return NULL;
+}
+
+static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd)
+{
+	if (gcry_cipher_setiv(hd, nonce, nonce_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
+
+	if (gcry_cipher_authenticate(hd, ad, ad_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
+
+	if (gcry_cipher_encrypt(hd, cipher, plain_len, plain, plain_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
+
+	if (gcry_cipher_gettag(hd, tag, tag_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
+
+	return 0;
+}
+
 
 /*----------------------------------------------------------------------------*/
 airplay_state_t airplaycl_state(struct airplaycl_s *p)
@@ -2082,28 +2362,72 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// TODO <@bradkeifer> work out if to implement response_handler_info_start()
 	airplay_rtsp_request_clean(p);
 	LOG_DEBUG("RTSP Request cleaned");
+
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
 
-		// airplay_rtsp_headers_add(p, "Content-Type: application/octet-stream");
+		// RTSP POST /pair-setup (step 1)
 		LOG_DEBUG("Adding content type %s", AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
 		airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
 		if (payload_make_pair_setup1(p, NULL) == -1) {
 			LOG_ERROR("Error constructing the RTSP pairing request");
 			goto erexit;
 		}
+		airplay_rtsp_request_log_debug(p);
+		LOG_DEBUG("Requesting RTSP Request to be processed");
+		rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+		LOG_DEBUG("RTSP Request processed. %s, length %d",
+			p->rtsp_response.content_type,
+			p->rtsp_response.length);
+
+		// Now handle the response and free the response memory
+		p->next_seq = response_handler_pair_setup1(p);
+		airplay_rtsp_request_clean(p);
+		LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+			airplay_pair_type_str(p->pair_type), p->pair_type, 
+			airplay_state_str(p->state), p->state, 
+			airplay_seq_type_str(p->next_seq), p->next_seq, 
+			p->status_flags);
+		
+		if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
+			p->state == AIRPLAY_STATE_AUTH &&
+			p->next_seq == AIRPLAY_SEQ_CONTINUE) {
+
+			// RTSP POST /pair-setup (step 2)
+			LOG_DEBUG("Proceeding with step 2 of pairing");
+			airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
+			if (payload_make_pair_setup2(p, NULL) == -1) {
+				LOG_ERROR("Error constructing the RTSP pairing request 2");
+				goto erexit;
+			}
+			airplay_rtsp_request_log_debug(p);
+			LOG_DEBUG("Requesting RTSP Request to be processed");
+			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+			LOG_DEBUG("RTSP Request processed. %s, length %d",
+				p->rtsp_response.content_type,
+				p->rtsp_response.length);
+
+			// Now handle the response and free the response memory
+			LOG_DEBUG("Handling RTSP Response for pair-setup step 2");
+			p->next_seq = response_handler_pair_setup2(p);
+			airplay_rtsp_request_clean(p);
+			LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+				airplay_pair_type_str(p->pair_type), p->pair_type, 
+				airplay_state_str(p->state), p->state, 
+				airplay_seq_type_str(p->next_seq), p->next_seq, 
+				p->status_flags);
+		}
 	}
 	else {
 		LOG_ERROR("Pairing scenario not currently supported.");
 		LOG_ERROR("Please open an issue at github.com://music-assistant/libraop");
-		LOG_ERROR("Pair type: %d, State: %d, Next sequence %d, Status Flags 0x%0x",
-			p->pair_type, p->state, p->next_seq, p->status_flags);
+		LOG_ERROR("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+			airplay_pair_type_str(p->pair_type), p->pair_type, 
+			airplay_state_str(p->state), p->state, 
+			airplay_seq_type_str(p->next_seq), p->next_seq, 
+			p->status_flags);
 	}
-	airplay_rtsp_request_log_debug(p);
-	LOG_DEBUG("Requesting RTSP Request to be processed");
-	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	LOG_DEBUG("RTSP Request processed");
 
 	// RTSP pairing verify for AppleTV
 	// if (*p->secret && !rtspcl_pair_verify(p->rtspcl, p->secret)) goto erexit;

@@ -35,6 +35,11 @@ typedef struct rtp_port_s {
 #define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
 #define AIRPLAY_CONTENT_TYPE_OCTET_STREAM		"application/octet-stream"
 
+/* Response codes */
+#define RTSP_OK			200
+#define RTSP_UNAUTHORIZED              401
+#define RTSP_FORBIDDEN                 403
+#define RTSP_CONNECTION_AUTH_REQUIRED  470
 
 typedef struct rtsp_headers {
 	key_data_t kd[MAX_KD];

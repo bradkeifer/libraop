@@ -71,6 +71,7 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 
 static void rtspcl_clear_response(rtsp_response_t *response);
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
+static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -888,6 +889,8 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	}
 
 	rtspcl_process_header_response(p, rkd, response);
+	rtspcl_process_body_response(p, resp_content, resp_len, response);
+	return true;
 
 erexit:
 	return false;
@@ -910,11 +913,11 @@ static void rtspcl_clear_response(rtsp_response_t *response) {
 	return;
 }
 
-// // Extracts the RTSP response header information required for the AirPlay2 functions
-// // @note Extraction of the response content is beyond the scope of this function
-// // @param p pointer to the RTSP client handle
-// // @param pkd the RTSP response header key data
-// // @param resp pointer to the RTSP response data to be stored
+// Extracts the RTSP response header information required for the AirPlay2 functions
+// @note Extraction of the response content is beyond the scope of this function
+// @param p pointer to the RTSP client handle
+// @param pkd the RTSP response header key data
+// @param resp pointer to the RTSP response data to be stored
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp) {
 	if (p == NULL) {
 		LOG_ERROR("No RTSP client handle");
@@ -935,6 +938,29 @@ static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_res
 			strncpy(resp->content_type, kd->data, sizeof(resp->content_type));
 		(void)*kd++;
 	}
+
+	return;
+}
+
+
+// Extracts the RTSP response body information required for the AirPlay2 functions
+// @note Extraction of the response header information is beyond the scope of this function
+// @param p pointer to the RTSP client handle
+// @param body the RTSP response body data
+// @param len the length of the RTSP response body
+// @param resp pointer to the RTSP response data to be stored
+static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp) {
+	if (p == NULL) {
+		LOG_ERROR("No RTSP client handle");
+		return;
+	}
+
+	if (!(resp->content = malloc(len))) {
+		LOG_ERROR("Unable to malloc memory for returning RTSP Response body. %s", strerror(errno));
+		return;
+	}
+	memcpy(resp->content, body, len);
+	resp->length = len;
 
 	return;
 }
