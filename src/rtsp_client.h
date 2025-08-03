@@ -106,9 +106,6 @@ char* rtspcl_local_ip(struct rtspcl_s *p);
 // @param rplen - the length of the returned plist will be stored here. Must be non-NUll if rplist is not NULL.
 // @returns - true on success, false otherwise
 bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);		
-bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
-	char *req_bplist, uint32_t req_bplist_len,
-	plist_t *resp_bplist, uint32_t *resp_plist_len);
 bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response);
 
 #endif

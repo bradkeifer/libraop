@@ -705,6 +705,8 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		req[len] = '\0';
 	}
 
+	LOG_INFO("Implement RTSP ciphering here if rtspcld->cipher.enabled");
+
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG( "[%p]: ----> : write %s", rtspcld, req );
 	free(req);
@@ -716,6 +718,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	if (!get_response)
 		return true;
 
+	// http_read_line is not going to work for reading encrypted data - we need to use a diferent
+	// method to read the response data and then decrypt it before parsing it to extract
+	// the RTSP Response data items
 	if (http_read_line(rtspcld->fd, line, sizeof(line), timeout, true) <= 0) {
 		LOG_ERROR("[%p]: response : %s request failed", rtspcld, line);
 		if (get_response == 1) return false;
@@ -866,21 +871,6 @@ bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
 	return false;
 }
 
-// Handles the SETUP SESSION request/response with the AirPlay2 device
-// @param p the RTSP client handle
-// @param req_bplist the binary plist to send to the AirPlay2 device
-// @param req_bplist_len the length of the plist to send to the AirPlay2 device
-// @param resp_plist a pointer to the plist received in the response from the AirPlay2 device
-// @param resp_plist_len a pointer to the length of the plist received in the response from the AirPlay2 device
-// @returns true on RTSP success, false on failure. Note that the caller must analyse the 
-// 		plist received from the AirPlay2 device to determine ultimate success 
-bool rtspcl_setup_session(struct rtspcl_s *p, struct rtp_port_s *port,
-	char *req_bplist, uint32_t req_bplist_len,
-	plist_t *resp_bplist, uint32_t *resp_plist_len) {
-
-	return false;
-}
-
 // Process a RTSP Request and update caller with details of the RTSP Response
 // @param p the RTSP client handle
 // @param request the RTSP Request information
@@ -928,7 +918,7 @@ static void rtspcl_clear_response(rtsp_response_t *response) {
 }
 
 // Extracts the RTSP response header information required for the AirPlay2 functions
-// @note Extraction of the response content is beyond the scope of this function
+// @note Extraction of the response body data is beyond the scope of this function
 // @param p pointer to the RTSP client handle
 // @param pkd the RTSP response header key data
 // @param resp pointer to the RTSP response data to be stored
@@ -980,11 +970,12 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 }
 
 
-// Encrypts or Decrypts RTSP data
-// @param p the AirPlay2 Session Client handle
+// Callback function for encrypting or decrypting RTSP data
+// @param p the RTSP Session Client handle
 // @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
 // @param inbuf the data to be encrypted/decrypted
 // @param encrypt encryption if value os non-zero, decryption if value is zero.
+// @note this needs to move back into airplay.c to remain aligned with owntones derived design
 static int rtsp_cipher(rtspcl_t *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
 {
 	uint8_t *in = inbuf->data;

@@ -702,9 +702,8 @@ int main(int argc, char *argv[])
 	if (ap_version == 1)
 		raopcl_disconnect(raopcl);
 	else if (ap_version == 2) {
-		LOG_DEBUG("raopcl_disconnect");
+		LOG_INFO("TODO: Implement airplay_disconnect()");
 		raopcl_disconnect(raopcl);
-		LOG_DEBUG("raopcl_disconnected");
 	}
 	pthread_join(glCmdPipeReaderThread, NULL);
 	goto exit;
@@ -715,8 +714,10 @@ exit:
 	unlink(cmdPipeName);
 	if (ap_version == 1)
 		raopcl_destroy(raopcl);
-	else if (ap_version == 2)
+	else if (ap_version == 2) {
+		LOG_INFO("TODO: Implement airplay_destroy()");
 		raopcl_destroy(raopcl);
+	}
 	close_platform();
 	return 0;
 }
