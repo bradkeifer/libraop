@@ -72,6 +72,12 @@ typedef struct rtsp_response_s {
 	char **content;			// Response body. Memory must be freed by the consumer. Allocation only by AirPlay2 handlers
 } rtsp_response_t;
 
+// Ciphering Buffer
+typedef struct cipher_buffer_s {
+	uint8_t *data;
+	size_t	length;
+} cipher_buffer_t;
+
 struct rtspcl_s *rtspcl_create(char* user_name);
 bool   			rtspcl_destroy(struct rtspcl_s *p);
 
@@ -107,5 +113,15 @@ char* rtspcl_local_ip(struct rtspcl_s *p);
 // @returns - true on success, false otherwise
 bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);		
 bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response);
+
+/**
+ * Set a callback for encryption/decryption. Callback must return -1 on error,
+ * and the callback must drain the part of *in that has been encrypted/decrypted.
+ * If the callback receives an incomplete ciphertext where nothing can be
+ * decrypted it should just leave the buffers and return 0.
+ *
+ */
+void rtspcl_set_ciphercb(struct rtspcl_s *p, 
+	int (*cb)(void *, struct cipher_buffer_s *out, struct cipher_buffer_s *in, int encrypt), void *);
 
 #endif

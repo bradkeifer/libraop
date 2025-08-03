@@ -38,18 +38,6 @@
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
 
-typedef struct rtsp_cipher_s {
-	bool enabled;			// true if ciphering is required/enabled
-	void *cb;				// ciphering callback function
-	struct pair_cipher_context *ctx; // cipher context - airplay2
-} rtsp_cipher_t;
-
-// Ciphering Buffer
-struct cipher_buffer_s {
-	uint8_t *data;
-	size_t	length;
-} cipher_buffer_t;
-
 typedef struct rtspcl_s {
     int fd;
     char url[128];
@@ -67,7 +55,15 @@ typedef struct rtspcl_s {
 	bool rtsp_response;		// True if we get an RTSP response. False otherwise.
 	int status_code;		// The RTSP status code of the response
 	char description[256];	// The description of the status code
-	rtsp_cipher_t cipher;	// Ciphering details
+	struct cipher_buffer_s *input_buffer;  /* Always plaintext */
+	struct cipher_buffer_s *output_buffer; /* Always plaintext */
+
+	struct cipher_buffer_s *input_raw;     /* Possibly ciphered */
+	struct cipher_buffer_s *output_raw;    /* Possibly ciphered */
+	bool cipher_enabled;	// true if RTSP encryption/decryption enabled
+	int (*ciphercb)(void *, struct cipher_buffer_s *out, struct cipher_buffer_s *in, int encrypt);
+	void *ciphercb_arg;
+
 } rtspcl_t;
 
 // extern log_level 	raop_loglevel;
@@ -85,7 +81,6 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 static void rtspcl_clear_response(rtsp_response_t *response);
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
 static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp);
-static int rtsp_cipher(struct rtspcl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -886,6 +881,10 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	// rtspcl_clear_response(response); // - this is the responsibility of the prior caller
 	if (!p) return false;
 
+	LOG_DEBUG("Testing rtsp_cipher callback. enabled=%d, p->ciphercb(%p), p->ciphercb_arg(%p)",
+		p->cipher_enabled, p->ciphercb, p->ciphercb_arg);
+	if (p->ciphercb) p->ciphercb(p->ciphercb_arg, NULL, NULL, 1);
+
 	if (!exec_request(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
@@ -894,6 +893,7 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 
 	rtspcl_process_header_response(p, rkd, response);
 	rtspcl_process_body_response(p, resp_content, resp_len, response);
+
 	return true;
 
 erexit:
@@ -969,67 +969,11 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 	return;
 }
 
+void rtspcl_set_ciphercb(struct rtspcl_s *p, 
+	int (*cb)(void *, struct cipher_buffer_s *, struct cipher_buffer_s *, int encrypt), 
+	void *cbarg) {
 
-// Callback function for encrypting or decrypting RTSP data
-// @param p the RTSP Session Client handle
-// @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
-// @param inbuf the data to be encrypted/decrypted
-// @param encrypt encryption if value os non-zero, decryption if value is zero.
-// @note this needs to move back into airplay.c to remain aligned with owntones derived design
-static int rtsp_cipher(rtspcl_t *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
-{
-	uint8_t *in = inbuf->data;
-	size_t in_len = inbuf->length;
-	uint8_t *out = NULL;
-	size_t out_len = 0;
-	ssize_t processed;
-
-	// I think we need to remove the static declaration from this function definition, because it will be
-	// called by the exec_request() in rtsp_client.c
-	// Perhaps the function declaration should be moved to rtsp_client.c??
-	// The session handle probably needs to become an RTSP session handle, rather than the AirPlay2 session handle
-	// in = evbuffer_pullup(inbuf, -1);
-	// in_len = evbuffer_get_length(inbuf);
-
-	if (encrypt) {
-#if AIRPLAY_DUMP_TRAFFIC
-		if (in_len < 4096) {
-			hexdump("Encrypting outgoing request\n", in, in_len);
-		}
-		else {
-			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
-		}
-#endif
-
-		processed = pair_encrypt(&out, &out_len, in, in_len, p->cipher.ctx);
-		if (processed < 0) {
-			goto error;
-		}
-	}
-	else {
-		processed = pair_decrypt(&out, &out_len, in, in_len, p->cipher.ctx);
-		if (processed < 0) {
-			goto error;
-		}
-
-#if AIRPLAY_DUMP_TRAFFIC
-		if (out_len < 4096) {
-			hexdump("Decrypted incoming response\n", out, out_len);
-		}
-		else {
-			LOG_DEBUG("Decrypted incoming response (size %zu)\n", out_len);
-		}
-#endif
-	}
-
-	// evbuffer_drain(inbuf, processed);
-	// evbuffer_add(outbuf, out, out_len);
-
-	return 0;
-
-error:
-	LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
-		in_len, pair_cipher_errmsg(p->cipher.ctx));
-
-	return -1;
+		p->ciphercb = cb;
+		p->ciphercb_arg = cbarg;
+		p->cipher_enabled = true;
 }

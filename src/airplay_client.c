@@ -373,7 +373,6 @@ typedef struct airplaycl_s {
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
 	rtsp_request_t rtsp_request;	// Added for AirPlay2
-	// rtsp_cipher_t rtsp_cipher;		// Added for AirPlay2
 
 	enum pair_type pair_type;	// Added for AirPlay 2
 	struct pair_cipher_context *control_cipher_ctx; // control cipher context - airplay2
@@ -409,6 +408,8 @@ static const char* airplay_seq_type_str(enum airplay_seq_type seq);
 static const char* airplay_state_str(enum airplay_state state);
 static const char* airplay_pair_type_str(enum pair_type pair_type);
 
+/* ----------------------- RTSP Helpers --------------------------------*/
+
 static void airplay_rtsp_request_log_debug(struct airplaycl_s *p);
 static bool airplay_rtsp_request_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_command_clean(struct airplaycl_s *p);
@@ -420,6 +421,12 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, const char *data);
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
+static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
+
+/*------------------------ Other Sequencing Helpers ------------------------*/
+
+static int payload_make_setup_session(struct airplaycl_s *p);
+
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -945,6 +952,122 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	return true;
 }
 
+// Callback function for encrypting or decrypting RTSP data
+// @param p the AirPlay 2 Session Client handle
+// @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
+// @param inbuf the data to be encrypted/decrypted
+// @param encrypt encryption if value os non-zero, decryption if value is zero.
+// @note this needs to move back into airplay.c to remain aligned with owntones derived design
+static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
+{
+	uint8_t *in;
+	size_t in_len;
+	uint8_t *out = NULL;
+	size_t out_len = 0;
+	ssize_t processed;
+
+	// in = evbuffer_pullup(inbuf, -1);
+	// in_len = evbuffer_get_length(inbuf);
+	in = inbuf->data;
+	in_len = inbuf->length;
+
+	if (encrypt) {
+		LOG_DEBUG("AirPlay 2 Client handle (%p). Encrypting.", p);
+		return 0;
+#if AIRPLAY_DUMP_TRAFFIC
+		if (in_len < 4096) {
+			hexdump("Encrypting outgoing request\n", in, in_len);
+		}
+		else {
+			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
+		}
+#endif
+
+		// processed = pair_encrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
+		// if (processed < 0) {
+		// 	goto error;
+		// }
+	}
+	else {
+		LOG_DEBUG("decrypting");
+		// processed = pair_decrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
+		// if (processed < 0) {
+		// 	goto error;
+		// }
+
+#if AIRPLAY_DUMP_TRAFFIC
+		if (out_len < 4096) {
+			hexdump("Decrypted incoming response\n", out, out_len);
+		}
+		else {
+			LOG_DEBUG("Decrypted incoming response (size %zu)\n", out_len);
+		}
+#endif
+	}
+
+	// evbuffer_drain(inbuf, processed);
+	// evbuffer_add(outbuf, out, out_len);
+
+	return 0;
+
+error:
+	// LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
+	// 	in_len, pair_cipher_errmsg(p->control_cipher_ctx));
+
+	return -1;
+}
+
+/*--------------------- Other Sequencing Helpers - logic sourced from owntones ---------------------------*/
+
+
+static int payload_make_setup_session(struct airplaycl_s *p)
+{
+	plist_t root;
+	// plist_t addresses;
+	// plist_t address;
+	plist_t add;
+	char *out = NULL;
+	uint32_t out_len = 0;
+	uint8_t *data;
+	size_t len;
+
+	// address = plist_new_string(p->host_addr.s_addr);
+	// addresses = plist_new_array();
+	// plist_array_append_item(addresses, address);
+
+	root = plist_new_dict();
+
+	add = plist_new_string(p->device_id);
+	plist_dict_set_item(root, AIRPLAY_PLIST_DEVICE_ID, add);
+
+	add = plist_new_string(p->session_uuid);
+	plist_dict_set_item(root, AIRPLAY_PLIST_SESSION_UUID, add);
+
+	add = plist_new_uint(p->rtp_ports.time.lport);
+	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PORT, add);
+
+	add = plist_new_string("NTP");
+	plist_dict_set_item(root, AIRPLAY_PLIST_TIMING_PROTOCOL, add); // If set to "None" then an ATV4 will not respond to stream SETUP request
+
+	plist_to_bin(root, &out, &out_len);
+	if (!out) {
+		LOG_ERROR("Unable to convert plist to binary");
+		plist_free(root);
+		return -1;
+	}
+	data = (uint8_t *)out;
+	len = out_len;
+
+	plist_free(root);
+
+	airplay_rtsp_command_add(p, "SETUP");
+	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
+	airplay_rtsp_body_add(p, data, len);
+
+	return 0;
+}
+
+
 /*--------------------- Pairing Helpers - some logic sourced from owntones  ------------------------------*/
 
 // Start the RTSP dialogue with the AirPlay device
@@ -1382,11 +1505,8 @@ static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_
 	p->control_cipher_ctx = control_cipher_ctx;
 	p->packet_cipher_hd = packet_cipher_hd;
 
-	LOG_INFO("Need to implement the equivalent of a event driven RTSP callback for rtsp_cipher");
-	// evrtsp_connection_set_ciphercb(rs->ctrl, rtsp_cipher, rs);
-	// r->ctrl is of type struct evrtsp_connection - perhaps equiavlent to our p->rtspcl handle
-	// rtsp_cipher is presumably a callback function
-	// rs is the airplay client session handle
+	rtspcl_set_ciphercb(p->rtspcl, rtsp_cipher, p);
+	LOG_INFO("RTSP cipher callback has been set");
 
 	return 0;
 
@@ -2182,9 +2302,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	} seed;
 	char sid[10+1], sci[16+1];
 	char *sac = NULL;
-	char sdp[1024];
 	key_data_t kd[64];
-	char *buf;
 	struct {
 		uint16_t count, offset;
 	} port = { 0 };
@@ -2266,6 +2384,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 			p->next_seq = response_handler_pair_setup2(p);
 			airplay_rtsp_request_clean(p);
 			airplay_session_status_log_debug(p);
+			LOG_WARN("Need to free the RTSP response body for pair-setup step 2");
 		}
 	}
 	else {
@@ -2307,7 +2426,20 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	if (p->rtp_ports.time.fd < 0) goto erexit;
 
-	// Under AirPlay 2, it might be premature to spawn this thread here????
+
+	// RTSP SETUP (session)
+	if (payload_make_setup_session(p) == -1) {
+		LOG_ERROR("Error constructing RTSP SETUP (session)");
+		goto erexit;
+	}
+	airplay_rtsp_request_log_debug(p);
+	LOG_DEBUG("rtsp_cipher(%p), AirPlay 2 Client handle(%p)", rtsp_cipher, p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	LOG_DEBUG("Implement a response handler for SETUP session");
+	airplay_rtsp_request_clean(p);
+	free(p->rtsp_response.content);
+
+
 	p->time_running = true;
 	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
 
@@ -2326,28 +2458,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	} while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
 
 	if (p->rtp_ports.audio.fd < 0) goto erexit;
-
-	// RTSP SETUP : get all RTP destination ports
-	// I think we need a new message constructor here to emulate owntones payload_make_setup_session
-	// if (!rtspcl_setup(p->rtspcl, &p->rtp_ports, kd)) goto erexit;
-	// if (!airplaycl_analyse_setup(p, kd)) goto erexit;
-	// kd_free(kd);
-
-	// Below commented code has been built and basic testing done.
-	// Further review of owntones code has found that auth-setup exchange is done
-	// after get /info, so let's postpone this code for a while
-	// char *req_bplist = NULL;
-	// plist_t *resp_plist = NULL;
-	// uint32_t req_bplist_len = 0;
-	// uint32_t resp_plist_len = 0;
-	// // We need to free the memory allocated for the bplist when we have finished with it
-	// airplaycl_setup_session(p, req_bplist, &req_bplist_len);
-	// LOG_DEBUG("%s setup session bplist constructed with length %d", p->name, req_bplist_len);
-	// if (!rtspcl_setup_session(p->rtspcl, &p->rtp_ports, req_bplist, req_bplist_len, resp_plist, &resp_plist_len)) {
-	// 	LOG_ERROR("%s unable to setup RTSP session");
-	// 	if (req_bplist) plist_to_bin_free(req_bplist);
-	// 	goto erexit;
-	// }
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
 	LOG_DEBUG( "[%p]:opened timing socket  l:%5d r:%d", p, p->rtp_ports.time.lport, p->rtp_ports.time.rport );
