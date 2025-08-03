@@ -402,6 +402,9 @@ static void hexdump(const char *msg, uint8_t *mem, size_t len);
 
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
+static void airplay_session_status_log_info(struct airplaycl_s *p);
+static void airplay_session_status_log_debug(struct airplaycl_s *p);
+
 static const char* airplay_seq_type_str(enum airplay_seq_type seq);
 static const char* airplay_state_str(enum airplay_state state);
 static const char* airplay_pair_type_str(enum pair_type pair_type);
@@ -588,6 +591,26 @@ static void hexdump(const char *msg, uint8_t *mem, size_t len)
     }
 }
 /* ----------------------- AirPlay Helpers --------------------------------*/
+
+// Print LOG_INFO output of current state of airplay session
+// @param p the AirPlay 2 client handle
+static void airplay_session_status_log_info(struct airplaycl_s *p) {
+	LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+		airplay_pair_type_str(p->pair_type), p->pair_type, 
+		airplay_state_str(p->state), p->state, 
+		airplay_seq_type_str(p->next_seq), p->next_seq, 
+		p->status_flags);
+}
+
+// Print LOG_DEBUG output of current state of airplay session
+// @param p the AirPlay 2 client handle
+static void airplay_session_status_log_debug(struct airplaycl_s *p) {
+	LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+		airplay_pair_type_str(p->pair_type), p->pair_type, 
+		airplay_state_str(p->state), p->state, 
+		airplay_seq_type_str(p->next_seq), p->next_seq, 
+		p->status_flags);
+}
 
 // Helper to display human readable sequence type
 // @param seq_type the sequence type to get human readable text
@@ -2077,81 +2100,6 @@ bool airplaycl_set_daap(struct airplaycl_s *p, int count, ...)
 }
 
 /*----------------------------------------------------------------------------*/
-// Set SDP (Session Description Protocol RFC-4566) for the AirPlay client
-// Prepares the SDP string based on the codec, encryption, and other parameters
-// from struct airplaycl_s *p
-// The complete SDP data is appended to char *sdp	
-// @param p the airplay client handle
-// @param sdp the SDP data
-// @returns true if successful, false if codec or encryption is not supported
-static bool airplaycl_set_sdp(struct airplaycl_s *p, char *sdp)
-{
-	bool rc = true;
-
-   // codec
-	switch (p->codec) {
-
-		case AIRPLAY_ALAC_RAW:
-		case AIRPLAY_ALAC: {
-			char buf[256];
-
-			sprintf(buf,
-					"m=audio 0 RTP/AVP 96\r\n"
-					"a=rtpmap:96 AppleLossless\r\n"
-					"a=fmtp:96 %d 0 %d 40 10 14 %d 255 0 0 %d\r\n",
-					p->chunk_len, p->sample_size, p->channels, p->sample_rate);
-			strcat(sdp, buf);
-			break;
-		}
-		case AIRPLAY_PCM: {
-			char buf[256];
-
-			sprintf(buf,
-					"m=audio 0 RTP/AVP 96\r\n"
-					"a=rtpmap:96 L%d/%d/%d\r\n",
-					p->sample_size, p->sample_rate, p->channels);
-			strcat(sdp, buf);
-			break;
-		}
-		default:
-			rc = false;
-			LOG_ERROR("[%p]: unsupported codec: %d", p, p->codec);
-			break;
-	}
-
-	// add encryption if required - only RSA
-	switch (p->crypto ) {
-		case AIRPLAY_RSA: {
-			char *key = NULL, *iv = NULL, *buf;
-			uint8_t rsakey[512];
-			int i;
-
-			i = rsa_encrypt(p->key, 16, rsakey);
-			base64_encode(rsakey, i, &key);
-			strremovechar(key, '=');
-			base64_encode(p->iv, 16, &iv);
-			strremovechar(iv, '=');
-			buf = malloc(strlen(key) + strlen(iv) + 128);
-			sprintf(buf, "a=rsaaeskey:%s\r\n"
-						"a=aesiv:%s\r\n",
-						key, iv);
-			strcat(sdp, buf);
-			free(key);
-			free(iv);
-			free(buf);
-			break;
-		}
-		case AIRPLAY_CLEAR:
-			break;
-		default:
-			rc = false;
-			LOG_ERROR("[%p]: unsupported encryption: %d", p, p->crypto);
-	}
-
-	return rc;
-}
-
-/*----------------------------------------------------------------------------*/
 // Extract AirPlay player information that is required for managing the session
 // and store it in the airplay_s structure
 // @param p the airplay client handle that will be updated
@@ -2280,75 +2228,50 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	}
 	p->next_seq = response_handler_info_start(p);
 	airplay_rtsp_request_clean(p);
-	LOG_DEBUG("RTSP Request cleaned");
-	LOG_DEBUG("%s pair_type = %s", p->name, airplay_pair_type_str(p->pair_type));
-	LOG_DEBUG("%s state = %s", p->name, airplay_state_str(p->state));
-	LOG_DEBUG("%s next_seq = %s", p->name, airplay_seq_type_str(p->next_seq));
+	airplay_session_status_log_debug(p);
 
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
 
 		// RTSP POST /pair-setup (step 1)
-		LOG_DEBUG("Adding content type %s", AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
 		airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
 		if (payload_make_pair_setup1(p, NULL) == -1) {
 			LOG_ERROR("Error constructing the RTSP pairing request");
 			goto erexit;
 		}
 		airplay_rtsp_request_log_debug(p);
-		LOG_DEBUG("Requesting RTSP Request to be processed");
 		rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-		LOG_DEBUG("RTSP Request processed. %s, length %d",
-			p->rtsp_response.content_type,
-			p->rtsp_response.length);
 
 		// Now handle the response and free the response memory
 		p->next_seq = response_handler_pair_setup1(p);
 		airplay_rtsp_request_clean(p);
-		LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
-			airplay_pair_type_str(p->pair_type), p->pair_type, 
-			airplay_state_str(p->state), p->state, 
-			airplay_seq_type_str(p->next_seq), p->next_seq, 
-			p->status_flags);
+		airplay_session_status_log_debug(p);
 		
 		if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 			p->state == AIRPLAY_STATE_AUTH &&
 			p->next_seq == AIRPLAY_SEQ_CONTINUE) {
 
 			// RTSP POST /pair-setup (step 2)
-			LOG_DEBUG("Proceeding with step 2 of pairing");
 			airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
 			if (payload_make_pair_setup2(p, NULL) == -1) {
 				LOG_ERROR("Error constructing the RTSP pairing request 2");
 				goto erexit;
 			}
 			airplay_rtsp_request_log_debug(p);
-			LOG_DEBUG("Requesting RTSP Request to be processed");
 			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-			LOG_DEBUG("RTSP Request processed. %s, length %d",
-				p->rtsp_response.content_type,
-				p->rtsp_response.length);
 
 			// Now handle the response and free the response memory
 			LOG_DEBUG("Handling RTSP Response for pair-setup step 2");
 			p->next_seq = response_handler_pair_setup2(p);
 			airplay_rtsp_request_clean(p);
-			LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
-				airplay_pair_type_str(p->pair_type), p->pair_type, 
-				airplay_state_str(p->state), p->state, 
-				airplay_seq_type_str(p->next_seq), p->next_seq, 
-				p->status_flags);
+			airplay_session_status_log_debug(p);
 		}
 	}
 	else {
 		LOG_ERROR("Pairing scenario not currently supported.");
 		LOG_ERROR("Please open an issue at github.com://music-assistant/libraop");
-		LOG_ERROR("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
-			airplay_pair_type_str(p->pair_type), p->pair_type, 
-			airplay_state_str(p->state), p->state, 
-			airplay_seq_type_str(p->next_seq), p->next_seq, 
-			p->status_flags);
+		airplay_session_status_log_info(p);
 	}
 
 	// RTSP pairing verify for AppleTV
