@@ -37,6 +37,7 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
+#define DEFAULT_READ_TIMEOUT 500	// milliseconds
 
 typedef struct rtspcl_s {
     int fd;
@@ -55,13 +56,9 @@ typedef struct rtspcl_s {
 	bool rtsp_response;		// True if we get an RTSP response. False otherwise.
 	int status_code;		// The RTSP status code of the response
 	char description[256];	// The description of the status code
-	struct cipher_buffer_s *input_buffer;  /* Always plaintext */
-	struct cipher_buffer_s *output_buffer; /* Always plaintext */
-
-	struct cipher_buffer_s *input_raw;     /* Possibly ciphered */
-	struct cipher_buffer_s *output_raw;    /* Possibly ciphered */
+	int read_timeout;		// ms timeout for reading RTSP Response
 	bool cipher_enabled;	// true if RTSP encryption/decryption enabled
-	int (*ciphercb)(void *, struct cipher_buffer_s *out, struct cipher_buffer_s *in, int encrypt);
+	int (*ciphercb)(void *, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 	void *ciphercb_arg;
 
 } rtspcl_t;
@@ -78,9 +75,17 @@ static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 key_data_t *kd, char **resp_content, int *resp_len,
 			 char* url);
 
-static void rtspcl_clear_response(rtsp_response_t *response);
+
+static bool exec_request_buf(rtspcl_t *rtspcld, char *cmd, char *content_type,
+			 char *content, int length, int get_response, key_data_t *hds,
+			 key_data_t *kd, char **resp_content, int *resp_len,
+			 char* url);
+
+			 static void rtspcl_clear_response(rtsp_response_t *response);
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
 static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp);
+
+static void hexdump(const char *msg, uint8_t *mem, size_t len);
 
 /*----------------------------------------------------------------------------*/
 int rtspcl_get_serv_sock(struct rtspcl_s *p) {
@@ -140,6 +145,8 @@ bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr hos
 	memcpy(&p->local_addr,&name.sin_addr, sizeof(struct in_addr));
 
 	sprintf(p->url,"rtsp://%s/%s", inet_ntoa(host), sid);
+
+	p->read_timeout = DEFAULT_READ_TIMEOUT;	// todo - make this a configurable variable
 
 	return true;
 }
@@ -700,10 +707,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		req[len] = '\0';
 	}
 
-	LOG_INFO("Implement RTSP ciphering here if rtspcld->cipher.enabled");
-
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG( "[%p]: ----> : write %s", rtspcld, req );
+	LOG_DEBUG("Wrote %d bytes", rval);
 	free(req);
 
 	if (rval != len) {
@@ -713,9 +719,6 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	if (!get_response)
 		return true;
 
-	// http_read_line is not going to work for reading encrypted data - we need to use a diferent
-	// method to read the response data and then decrypt it before parsing it to extract
-	// the RTSP Response data items
 	if (http_read_line(rtspcld->fd, line, sizeof(line), timeout, true) <= 0) {
 		LOG_ERROR("[%p]: response : %s request failed", rtspcld, line);
 		if (get_response == 1) return false;
@@ -818,13 +821,352 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 // AirPlay2 specific RTSP handlers
 
+// send RTSP request, and get response if it's needed. Ciphering of the exchange is supported
+// if this gets a success, *rkd is allocated or reallocated (if *kd is not NULL)
+// @param rtspcld the RTSP session handle
+// @param cmd the RTSP Request Command
+// @param content_type the RTSP Content-Type. Can be NULL if no content.
+// @param content the RTSP Request (body) content. Can be NULL
+// @param length the RTSP Request (body) content length. 
+// Must be the length of the content in bytes, if content is non-NULL. Can be 0 if content is NULL.
+// @param get_response 1 to read the RTSP Response, 0 to not read any RTSP Response
+// @param hds RTSP Header key data items specific to this RTSP Request.
+// @param rkd RTSP Header key data items from the RTSP Response - if desired. Can be NULL 
+// and indicates that no Header key data items are required by the caller
+// @param resp_content a pointer to where the RTSP Response (body) content is to be saved. Can be NULL
+// and indicates that no RTSP Response (body) content is required by the caller
+// @param resp_len a pointer to where the RTSP Response (body) content length is to be saved. Can be NULL
+// and indicates that no RTSP Response (body) content is required by the caller
+// @param url a custom/specific URL to use instead of the standard URL used for this specific RTSP session handle.
+// Can be NULL
+// @returns true on success, false on failure
+// @note Header key data items that are generic to every RTSP Request associated with the RTSP
+// session handle are stored in the RTSP session handle. CSeq is automatically
+// calculated and managed internally by this function
+static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
+				char *content, int length, int get_response, key_data_t *hds,
+				key_data_t *rkd, char **resp_content, int *resp_len, char* url) {
+
+	char resp_line[2048] = "";
+	char *line;
+	char buf[128];
+	const char delimiters[] = " ";
+	const char buf_plaintext_delimiters[] = "\r\n";
+	char *token,*dp;
+	int i, rval, len, clen;
+	// int timeout = 10000; // msec unit
+	struct pollfd pfds;
+	key_data_t lkd[MAX_KD];
+	key_data_t *pkd = NULL;
+	uint8_t *buf_plaintext = NULL;
+	size_t len_plaintext = 0;
+	uint8_t *buf_raw = NULL;
+	size_t len_raw = 0;
+	uint8_t *response_body = NULL;
+	char *response_header = NULL;
+	char *temp_buf = NULL;
+	char *needle = NULL;
+	char *header_ptr = NULL;
+	char *line_ptr = NULL;
+
+	rtspcld->rtsp_response = false;
+	rtspcld->status_code = 0;
+	rtspcld->description[0] = 0;
+
+	if (!rtspcld || rtspcld->fd == -1) return false;
+	if (content && (length = 0 || !content_type)) return false;
+
+	pfds.fd = rtspcld->fd;
+	pfds.events = POLLOUT;
+
+	i = poll(&pfds, 1, 0);
+	if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
+
+	// Allocate memory buffers for plain text and encrypted data. Maxmimum RTSP Message size is 4096 bytes
+	// Presumably this is also enough for encrypted exchanges?? - Perhaps not.
+	// @todo check and validate sizing requirements for encrypted data
+	buf_plaintext = calloc(1, RTSP_MAX_MESSAGE);
+	if (!buf_plaintext) {
+		LOG_ERROR("Unable to allocate output plaintext memory. %s", strerror(errno));
+		goto erexit;
+	}
+	buf_raw = calloc(1, RTSP_MAX_MESSAGE);
+	if (!buf_raw) {
+		LOG_ERROR("Unable to allocate output raw memory. %s", strerror(errno));
+		goto erexit;
+	}
+	
+
+	sprintf((char *)buf_plaintext, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
+
+	for (i = 0; hds && hds[i].key != NULL; i++) {
+		sprintf(buf, "%s: %s\r\n", hds[i].key, hds[i].data);
+		strcat((char *)buf_plaintext, buf);
+	}
+
+	if (content_type && content) {
+		sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length);
+		strcat((char *)buf_plaintext, buf);
+	}
+
+	sprintf(buf,"CSeq: %d\r\n", ++rtspcld->cseq);
+	strcat((char *)buf_plaintext, buf);
+
+	sprintf(buf, "User-Agent: %s\r\n", rtspcld->useragent );
+	strcat((char *)buf_plaintext, buf);
+
+	for (i = 0; rtspcld->exthds[i].key; i++) {
+		if ((unsigned char) rtspcld->exthds[i].key[0] == 0xff) continue;
+		sprintf(buf,"%s: %s\r\n", rtspcld->exthds[i].key, rtspcld->exthds[i].data);
+		strcat((char *)buf_plaintext, buf);
+	}
+
+	if (rtspcld->session != NULL )    {
+		sprintf(buf,"Session: %s\r\n",rtspcld->session);
+		strcat((char *)buf_plaintext, buf);
+	}
+
+	// add digest if we have a password
+	if (*rtspcld->digest.ha1) {
+		char* buf, digest[32+1];
+		asprintf(&buf, "%s:%s", cmd, url ? url : rtspcld->url);
+		unsigned char ha2_bin[16], ha2[32+1];
+		MD5((uint8_t*) buf, strlen(buf), ha2_bin);
+
+		free(buf); buf = (char*) ha2;
+		bytes2hex(ha2_bin, sizeof(ha2_bin), &buf);
+		asprintf(&buf, "%s:%s:%s", rtspcld->digest.ha1, rtspcld->digest.nonce, ha2);
+		unsigned char digest_bin[16];
+		MD5((uint8_t*) buf, strlen(buf), digest_bin);
+
+		free(buf); buf = digest;
+		bytes2hex(digest_bin, sizeof(digest_bin), &buf);
+
+		sprintf((char *)buf_plaintext + strlen((char *)buf_plaintext), 
+			"Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\"\r\n", 
+			!strcasecmp(rtspcld->digest.realm, "raop") ? "iTunes" : "AirPlay", rtspcld->digest.realm,
+			rtspcld->digest.nonce, url ? url : rtspcld->url, digest);
+	}
+
+	strcat((char *)buf_plaintext,"\r\n");
+	len = strlen((char *)buf_plaintext);
+	len_plaintext = len;
+
+	if (content_type && content) {
+		len_plaintext = len + length;
+		memcpy(buf_plaintext + len, content, length);
+	}
+
+#ifdef AIRPLAY_DUMP_TRAFFIC
+	hexdump("RTSP Request\n", buf_plaintext, len_plaintext);
+#endif
+	if (rtspcld->cipher_enabled) {
+		LOG_DEBUG("Encrypting");
+		rtspcld->ciphercb(rtspcld->ciphercb_arg, buf_raw, &len_raw, buf_plaintext, len_plaintext, 1);
+	}
+	else {
+		LOG_DEBUG("Encryption not required. Copying %d bytes to buf_raw", len_plaintext);
+		memcpy(buf_raw, buf_plaintext, len_plaintext);
+		len_raw = len_plaintext;
+	}
+
+	rval = send(rtspcld->fd, buf_raw, len_raw, 0);
+	if (rval != len_raw) {
+	   LOG_ERROR( "[%p]: couldn't write request (%d!=%d)", rtspcld, rval, len_raw);
+	}
+
+	if (!get_response) {
+		// Free allocated memory and return true.
+		if (buf_plaintext) free(buf_plaintext);
+		if (buf_raw) free(buf_raw);
+		return true;
+	}
+
+	// Zero data transfer buffers in preparation for receiving RTSP Response just to be safe
+	memset(buf_raw, 0, RTSP_MAX_MESSAGE);
+	len_raw = 0;
+	memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
+	len_plaintext = 0;
+
+	pfds.fd = rtspcld->fd;
+	pfds.events = POLLIN;
+	LOG_DEBUG("Starting polled read of RTSP Response, with timeout of %d ms", rtspcld->read_timeout);
+	for (len_raw=0; len_raw < RTSP_MAX_MESSAGE; len_raw++) {
+		if (poll(&pfds, 1, rtspcld->read_timeout)) {
+			rval = recv(rtspcld->fd, buf_raw + len_raw, 1, 0);
+			if (rval == 0) {
+				if (len_raw == 0) {
+					LOG_ERROR("No response from AirPlay client");
+					goto erexit;
+				}
+				break;
+			}
+			else if (rval == -1) {
+				LOG_ERROR("Unexpected error reading RTSP Response. %s", strerror(errno));
+				goto erexit;
+			}
+		}
+		else {
+			break;
+		}
+	}
+	if (len_raw == 0) { // guard
+		LOG_ERROR("Unexpected error. %d bytes of RTSP Response", len_raw);
+		goto erexit;
+	}
+
+#ifdef AIRPLAY_DUMP_TRAFFIC
+	hexdump("RTSP Response\n", buf_raw, len_raw);
+#endif
+
+if (rtspcld->cipher_enabled) {
+		LOG_DEBUG("Decrypting. length %d", len_raw);
+		rtspcld->ciphercb(rtspcld->ciphercb_arg, buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
+	}
+	else {
+		LOG_DEBUG("Encryption not required. length %d", len_raw);
+		memcpy(buf_plaintext, buf_raw, len_raw);
+		len_plaintext = len_raw;
+	}
+
+	// We now have a complete RTSP Response message in buf_plaintext. This will consist of a Header and a Body.
+	// The Body may be non-ascii. We should split buf_plaintext into two data buffers for each of the Header and the Body
+	// This will make parsing the data much simpler and robust.
+	temp_buf = malloc(len_plaintext+1); // need +1 in order to allow null termination
+	if (!temp_buf) {
+		LOG_ERROR("Unable to allocate memory for temporary buffer. %s", strerror(errno));
+		goto erexit;
+	}
+	memcpy(temp_buf, buf_plaintext, len_plaintext);
+	// null terminate temp_buf, just to be safe for strstr call
+	if (len_plaintext < RTSP_MAX_MESSAGE) {
+		*(temp_buf+len_plaintext) = '\0';
+	}
+	else {
+		LOG_ERROR("len_plaintext too big at %d", len_plaintext);
+		goto erexit;
+	}
+	needle = strstr(temp_buf, "Content-Length: ");
+	if (needle) {
+		needle += strlen("Content-Length: ");
+		token = strtok(needle, buf_plaintext_delimiters);
+		clen = atoi(token);
+		if ((response_body = malloc(clen)) == NULL ) {
+			LOG_ERROR("Unable to malloc %d bytes for response_body. %s", clen, strerror(errno));
+			goto erexit;
+		}
+		memcpy(response_body, (buf_plaintext + len_plaintext - clen) , clen);
+	}
+	else {
+		clen = 0;
+		response_body = NULL;
+	}
+	if ((response_header = malloc(len_plaintext - clen + 1)) == NULL) {
+		LOG_ERROR("Unable to malloc %d bytes for response header", len_plaintext - clen);
+		goto erexit;
+	}
+	if (temp_buf) {
+		LOG_DEBUG("Freeing temp_buf");
+		free(temp_buf);
+		temp_buf = NULL;
+	}
+	memcpy(response_header, buf_plaintext, len_plaintext - clen);
+	*(response_header + len_plaintext - clen + 1) = '\0'; // null terminate response header
+
+	if (resp_content && resp_len) {
+		*resp_len = clen;
+		if (clen) {
+			*resp_content = (char *)response_body;
+		}
+		else {
+			*resp_content = NULL;
+		}
+	}
+
+	line = strtok_r(response_header, buf_plaintext_delimiters, &header_ptr);
+	char *status_line = NULL;
+	asprintf(&status_line, "%s", line);
+	token = strtok_r(status_line, delimiters, &line_ptr);
+	if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
+		rtspcld->rtsp_response = true;
+	}
+	else {
+		rtspcld->rtsp_response = false;
+		LOG_ERROR("Invalid RTSP/1.0 Response");
+		if (status_line) free(status_line);
+		goto erexit;
+	}
+	token = strtok_r(NULL, delimiters, &line_ptr);
+	rtspcld->status_code = (int)strtol(token, NULL, 10);
+	while ((token = strtok_r(NULL, delimiters, &line_ptr))) {
+		if ((strlen(rtspcld->description) + 
+			strlen(token) < sizeof(rtspcld->description))) {
+
+			strcat(rtspcld->description, token);
+			strcat(rtspcld->description, " ");
+		}
+	}
+	if (status_line) free(status_line);
+
+	i = 0;
+	clen = 0;
+	if (rkd) pkd = rkd;
+	else pkd = lkd;
+	pkd[0].key = NULL;
+
+	while ((line = strtok_r(NULL, buf_plaintext_delimiters, &header_ptr))) {
+		LOG_DEBUG("line: %s", line);
+		hexdump("Line:", (uint8_t *)line, strlen(line));
+		memset(resp_line, 0, sizeof(resp_line));
+		strncpy(resp_line, line, sizeof(resp_line));
+		LOG_DEBUG("[%p]: <------ : %s", rtspcld, resp_line);
+
+		if (i && resp_line[0] == ' ') {
+			size_t j;
+			for(j = 0; j < strlen(resp_line); j++) if (resp_line[j] != ' ') break;
+			pkd[i].data = strdup(resp_line + j);
+			continue;
+		}
+
+		dp = strstr(resp_line,":");
+
+		if (!dp){
+			LOG_ERROR("[%p]: Request failed, bad header", rtspcld);
+			goto erexit;
+		}
+
+		*dp = 0;
+		pkd[i].key = strdup(resp_line);
+		pkd[i].data = strdup(dp + 1);
+
+		i++;
+		pkd[i].key = NULL;
+	}
+	
+	pkd[i].key = NULL;
+	if (pkd->key[0]) kd_free(pkd);
+
+	return true;
+
+erexit:
+	LOG_ERROR("erexiting");
+	if (buf_plaintext) free(buf_plaintext);
+	if (buf_raw) free(buf_raw);
+	if (pkd && pkd->key[0]) kd_free(pkd);
+	if (temp_buf) free(temp_buf);
+	if (response_header) free(response_header);
+	if (response_body) free(response_body);
+	return false;
+}
+
+
 // Requests GET /info from the Airplay device and returns the plist received.
 // @param p the RTSP client handle
 // @param resp the RTSP response from the AirPlay device.  Memory is allocation as required.
 // @returns true on success, false on failure
 // @note It is the responsibility of the caller to free the memory allocated for the response data
 bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
-	char *resp_content;
+	char *resp_content = NULL;
 	int resp_len = 0;
 	plist_t pinfo = NULL;
 	key_data_t rkd[MAX_KD] = { 0 };
@@ -832,7 +1174,7 @@ bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
 	rtspcl_clear_response(resp);
 	if (!p) return false;
 
-	if (!exec_request(p, "GET /info", NULL, NULL, 0, 1, NULL, rkd, (char **) &resp_content, &resp_len, NULL)) {
+	if (!exec_request_buf(p, "GET /info", NULL, NULL, 0, 1, NULL, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
 	}
@@ -873,7 +1215,7 @@ bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
 // @returns true on success, false on failure
 // @note It is the responsibility of the caller to free the memory allocated for the response data
 bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response) {
-	char *resp_content;
+	char *resp_content = NULL;
 	int resp_len = 0;
 	// plist_t pinfo = NULL;
 	key_data_t rkd[MAX_KD] = { 0 };
@@ -881,11 +1223,8 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	// rtspcl_clear_response(response); // - this is the responsibility of the prior caller
 	if (!p) return false;
 
-	LOG_DEBUG("Testing rtsp_cipher callback. enabled=%d, p->ciphercb(%p), p->ciphercb_arg(%p)",
-		p->cipher_enabled, p->ciphercb, p->ciphercb_arg);
-	if (p->ciphercb) p->ciphercb(p->ciphercb_arg, NULL, NULL, 1);
-
-	if (!exec_request(p, request->command, request->content_type, request->body.mem, request->body.length,
+	LOG_DEBUG("About to call exec_request_buf");
+	if (!exec_request_buf(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
@@ -970,10 +1309,50 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 }
 
 void rtspcl_set_ciphercb(struct rtspcl_s *p, 
-	int (*cb)(void *, struct cipher_buffer_s *, struct cipher_buffer_s *, int encrypt), 
+	int (*cb)(void *, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt), 
 	void *cbarg) {
 
 		p->ciphercb = cb;
 		p->ciphercb_arg = cbarg;
 		p->cipher_enabled = true;
+}
+
+
+// Prints a hexdump of binary data to stdout
+// @param msg a heading message, if required
+// mem pointer to the binary data to hexdump
+// len length of data to hexdump
+static void hexdump(const char *msg, uint8_t *mem, size_t len)
+{
+  int i, j;
+  int hexdump_cols = 16;
+
+  if (msg)
+    printf("%s", msg);
+
+  for (i = 0; i < len + ((len % hexdump_cols) ? (hexdump_cols - len % hexdump_cols) : 0); i++)
+    {
+      if(i % hexdump_cols == 0)
+	printf("0x%06x: ", i);
+
+      if (i < len)
+	printf("%02x ", 0xFF & ((char*)mem)[i]);
+      else
+	printf("   ");
+
+      if (i % hexdump_cols == (hexdump_cols - 1))
+	{
+	  for (j = i - (hexdump_cols - 1); j <= i; j++)
+	    {
+	      if (j >= len)
+		putchar(' ');
+	      else if (isprint(((char*)mem)[j]))
+		putchar(0xFF & ((char*)mem)[j]);
+	      else
+		putchar('.');
+	    }
+
+	  putchar('\n');
+	}
+    }
 }

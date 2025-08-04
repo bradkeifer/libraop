@@ -416,12 +416,12 @@ static bool airplay_rtsp_command_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_command_add(struct airplaycl_s *p, char *command);
 static bool airplay_rtsp_content_type_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_type);
-static int airplay_rtsp_headers_get_count(struct airplaycl_s *p);
+// static int airplay_rtsp_headers_get_count(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, const char *data);
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
-static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt);
+static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
@@ -432,18 +432,21 @@ static int payload_make_setup_session(struct airplaycl_s *p);
 
 static bool airplay_session_sequence_start(struct airplaycl_s *p);
 
+static int payload_make_pin_start(struct airplaycl_s *p);
 static int payload_make_pair_generic(struct airplaycl_s *p, int step);
 static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg);
 static int payload_make_pair_setup2(struct airplaycl_s *p, void* arg);
-static int payload_make_pair_setup3(struct airplaycl_s *p, void* arg);
+// static int payload_make_pair_setup3(struct airplaycl_s *p, void* arg);
 
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
 
+
+static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p);
-static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
+// static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
 
 /*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
 
@@ -711,7 +714,8 @@ static const char* airplay_pair_type_str(enum pair_type pair_type) {
 	}
 }
 
-// LOG__DEBUG the current state of the RTSP Request
+// LOG_DEBUG the current state of the RTSP Request
+// @param p the AirPlay 2 Client Handle
 static void airplay_rtsp_request_log_debug(struct airplaycl_s *p){
 	if (!p) {
 		LOG_ERROR("Invalid AirPlay client handle");
@@ -734,31 +738,25 @@ static bool airplay_rtsp_request_clean(struct airplaycl_s *p) {
 		return false;
 	}
 
-	LOG_DEBUG("Cleaning command");
+	LOG_DEBUG("Command clean");
 	if (!airplay_rtsp_command_clean(p)) return false;
-	LOG_DEBUG("Cleaning content type");
+	LOG_DEBUG("Content Type clean");
 	if (!airplay_rtsp_content_type_clean(p)) return false;
-	LOG_DEBUG("Cleaning RTSP Headers type");
+	LOG_DEBUG("Headers clean");
 	if (!airplay_rtsp_headers_clean(p)) return false;
-	LOG_DEBUG("Cleaning RTSP Body type");
+	LOG_DEBUG("Body clean");
 	if (!airplay_rtsp_body_clean(p)) return false;
 
 	return true;
 }
 
 static bool airplay_rtsp_command_clean(struct airplaycl_s *p) {
-	LOG_DEBUG("airplay_rtps_command_clean(%p)", p);
 	if (!p) {
 		LOG_ERROR("Invalid AirPlay client handle");
 		return false;
 	}
 
-	if (p->rtsp_request.command == NULL) {
-		LOG_WARN("Command already clean");
-		return true;
-	}
-
-	free(p->rtsp_request.command);
+	p->rtsp_request.command[0] = '\0';
 
 	return true;
 }
@@ -769,16 +767,12 @@ static bool airplay_rtsp_command_add(struct airplaycl_s *p, char *command) {
 		return false;
 	}
 
-	// if (p->rtsp_request.command && strlen(p->rtsp_request.command)) {
-	// 	LOG_ERROR("Command already defined: %s", p->rtsp_request.command);
-	// 	return false;
-	// }
-
-	p->rtsp_request.command= strdup(command);
-	if (p->rtsp_request.command == (char *)NULL) {
-		LOG_ERROR("Unable to allocate memory for command %s", command);
+	if (strlen(command) > sizeof(p->rtsp_request.command)) {
+		LOG_ERROR("Command too long. %d > %d", strlen(command), sizeof(p->rtsp_request.command));
 		return false;
 	}
+
+	strncpy(p->rtsp_request.command, command, sizeof(p->rtsp_request.command));
 
 	return true;
 }
@@ -789,13 +783,7 @@ static bool airplay_rtsp_content_type_clean(struct airplaycl_s *p) {
 		return false;
 	}
 
-	if (p->rtsp_request.content_type == NULL) {
-		LOG_WARN("Content Type already clean");
-		return true;
-	}
-
-	free(p->rtsp_request.content_type);
-	// *p->rtsp_request.content_type = '\0';
+	p->rtsp_request.content_type[0] = '\0';
 
 	return true;
 }
@@ -806,21 +794,12 @@ static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_t
 		return false;
 	}
 
-	if (!content_type) {
-		LOG_WARN("Trying to add content type value of %s", content_type);
-		return true;
-	}
-
-	// if (p->rtsp_request.content_type && strlen(p->rtsp_request.content_type)) {
-	// 	LOG_ERROR("Content Type already defined: %s", p->rtsp_request.content_type);
-	// 	return false;
-	// }
-
-	p->rtsp_request.content_type= strdup(content_type);
-	if (p->rtsp_request.content_type == (char *)NULL) {
-		LOG_ERROR("Unable to allocate memory for content_type %s", content_type);
+	if (strlen(content_type) > sizeof(p->rtsp_request.content_type)) {
+		LOG_ERROR("Content Type too long. %d > %d", strlen(content_type), sizeof(p->rtsp_request.content_type));
 		return false;
 	}
+
+	strncpy(p->rtsp_request.content_type, content_type, sizeof(p->rtsp_request.content_type));
 
 	return true;
 }
@@ -828,14 +807,14 @@ static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_t
 // Get the number of RTSP Headers currently stored
 // @param p the AirPlay client handle
 // @returns the number of RTSP Headers or -1 on error.
-static int airplay_rtsp_headers_get_count(struct airplaycl_s *p) {
-	if (!p) {
-		LOG_ERROR("Invalid AirPlay client handle");
-		return -1;
-	}
+// static int airplay_rtsp_headers_get_count(struct airplaycl_s *p) {
+// 	if (!p) {
+// 		LOG_ERROR("Invalid AirPlay client handle");
+// 		return -1;
+// 	}
 
-	return p->rtsp_request.headers.count;
-}
+// 	return p->rtsp_request.headers.count;
+// }
 
 // Clean/reset the RTSP request Headers buffer
 // @param p the AirPlay client handle
@@ -848,18 +827,13 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
 	}
 
 	if (p->rtsp_request.headers.count == 0) {
-		LOG_DEBUG("RTSP Headers already clean");
+		LOG_WARN("RTSP Headers already clean");
 		return true;
 	}
-
-	LOG_DEBUG("Cleaning RTSP Headers. Current count is %d",
-		p->rtsp_request.headers.count);
 
 	kd_free(p->rtsp_request.headers.kd);
 	p->rtsp_request.headers.count = 0;
 
-	LOG_DEBUG("RTSP request Headers cleaned. Count = %d",
-		p->rtsp_request.headers.count);
 	return true;
 }
 
@@ -923,9 +897,6 @@ static bool airplay_rtsp_body_clean(struct airplaycl_s *p) {
 	}
 	p->rtsp_request.body.length = 0;
 	memset(p->rtsp_request.body.mem, 0, RTSP_MAX_BODY);
-	LOG_DEBUG("RTSP request body cleaned %c, length %d",
-		p->rtsp_request.body.mem[0],
-		p->rtsp_request.body.length);
 	return true;
 }
 
@@ -939,8 +910,6 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 		LOG_ERROR("Invalid paramaters");
 		return false;
 	}
-	LOG_DEBUG("Adding %d bytes to existing body of length %d", 
-		data_len, p->rtsp_request.body.length);
 	if ((p->rtsp_request.body.length + data_len) > RTSP_MAX_BODY) {
 		LOG_ERROR("New data add would cause body overflow. %d + %d > %d",
 			p->rtsp_request.body.length, data_len, RTSP_MAX_BODY);
@@ -948,7 +917,6 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	}
 	memcpy(&p->rtsp_request.body.mem[p->rtsp_request.body.length], data, data_len);
 	p->rtsp_request.body.length += data_len;
-	LOG_DEBUG("RTSP body now %d bytes", p->rtsp_request.body.length);
 	return true;
 }
 
@@ -958,22 +926,22 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 // @param inbuf the data to be encrypted/decrypted
 // @param encrypt encryption if value os non-zero, decryption if value is zero.
 // @note this needs to move back into airplay.c to remain aligned with owntones derived design
-static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, struct cipher_buffer_s *inbuf, int encrypt)
+static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt)
 {
 	uint8_t *in;
 	size_t in_len;
 	uint8_t *out = NULL;
 	size_t out_len = 0;
 	ssize_t processed;
+	struct airplaycl_s *p = (struct airplaycl_s *)vp;
+
 
 	// in = evbuffer_pullup(inbuf, -1);
 	// in_len = evbuffer_get_length(inbuf);
-	in = inbuf->data;
-	in_len = inbuf->length;
+	in = buf_in;
+	in_len = buf_in_len;
 
 	if (encrypt) {
-		LOG_DEBUG("AirPlay 2 Client handle (%p). Encrypting.", p);
-		return 0;
 #if AIRPLAY_DUMP_TRAFFIC
 		if (in_len < 4096) {
 			hexdump("Encrypting outgoing request\n", in, in_len);
@@ -983,17 +951,16 @@ static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, st
 		}
 #endif
 
-		// processed = pair_encrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
-		// if (processed < 0) {
-		// 	goto error;
-		// }
+		processed = pair_encrypt(&buf_out, buf_out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		if (processed < 0) {
+			goto error;
+		}
 	}
 	else {
-		LOG_DEBUG("decrypting");
-		// processed = pair_decrypt(&out, &out_len, in, in_len, p->control_cipher_ctx);
-		// if (processed < 0) {
-		// 	goto error;
-		// }
+		processed = pair_decrypt(&buf_out, buf_out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		if (processed < 0) {
+			goto error;
+		}
 
 #if AIRPLAY_DUMP_TRAFFIC
 		if (out_len < 4096) {
@@ -1011,8 +978,8 @@ static int rtsp_cipher(struct airplaycl_s *p, struct cipher_buffer_s *outbuf, st
 	return 0;
 
 error:
-	// LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
-	// 	in_len, pair_cipher_errmsg(p->control_cipher_ctx));
+	LOG_ERROR("Error while %s (len=%zu): %s\n", encrypt ? "encrypting" : "decrypting", 
+		buf_in_len, pair_cipher_errmsg(p->control_cipher_ctx));
 
 	return -1;
 }
@@ -1114,6 +1081,19 @@ static bool airplay_session_sequence_start(struct airplaycl_s *p) {
 	}
 	LOG_WARN("Check to see if we do indeed free p->rtsp_response.content later in program execution");
 	return true;
+}
+
+static int payload_make_pin_start(struct airplaycl_s *p)
+{
+	LOG_INFO("Starting device pairing for '%s', go to the web interface and enter PIN\n", p->name);
+
+	airplay_rtsp_command_add(p, PAIR_AP_POST_PIN_START);
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+		airplay_rtsp_headers_add(p, "X-Apple-HKP", "3");
+	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+		airplay_rtsp_headers_add(p, "X-Apple-HKP", "4");
+
+	return 0;
 }
 
 // Generic handler for constructing RTSP pairing data
@@ -1219,12 +1199,12 @@ payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
 	return payload_make_pair_generic(p, 2);
 }
 
-static int
-payload_make_pair_setup3(struct airplaycl_s *p, void *arg)
-{
-	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
-	return payload_make_pair_generic(p, 3);
-}
+// static int
+// payload_make_pair_setup3(struct airplaycl_s *p, void *arg)
+// {
+// 	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+// 	return payload_make_pair_generic(p, 3);
+// }
 
 // Extract statusFlags from plist in RTSP Response and determine next sequence
 // @param response the RTSP response data
@@ -1322,6 +1302,16 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 	return seq_type;
 }
 
+// Response handler for pairing with a PIN
+// @param p The AirPlay 2 Client Handle
+// @returns the next sequence
+static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p)
+{
+  p->state = AIRPLAY_STATE_AUTH;
+
+  return AIRPLAY_SEQ_CONTINUE; // TODO before we reported failure since device is locked
+}
+
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
 {
 	uint8_t *response;
@@ -1385,6 +1375,8 @@ static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 		}
 		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
 
+		LOG_DEBUG("Returing next sequence=AIRPLAY_SEQ_PIN_START, "
+			"with pair_type PAIR_CLIENT_HOMEKIT_NORMAL");
 		return AIRPLAY_SEQ_PIN_START;
 	}
 
@@ -1425,41 +1417,41 @@ error:
 	return AIRPLAY_SEQ_ABORT;
 }
 
-static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p)
-{
-	// struct output_device *device;
-	const char *authorization_key;
-	enum airplay_seq_type seq_type;
-	int ret;
+// static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p)
+// {
+// 	// struct output_device *device;
+// 	const char *authorization_key;
+// 	enum airplay_seq_type seq_type;
+// 	int ret;
 
-	seq_type = response_handler_pair_generic(3, p);
-	if (seq_type != AIRPLAY_SEQ_CONTINUE)
-	return seq_type;
+// 	seq_type = response_handler_pair_generic(3, p);
+// 	if (seq_type != AIRPLAY_SEQ_CONTINUE)
+// 	return seq_type;
 
-	ret = pair_setup_result(&authorization_key, NULL, p->pair_setup_ctx);
-	if (ret < 0) {
-		LOG_ERROR("Pair setup result error: %s\n", pair_setup_errmsg(p->pair_setup_ctx));
-		return AIRPLAY_SEQ_ABORT;
-	}
+// 	ret = pair_setup_result(&authorization_key, NULL, p->pair_setup_ctx);
+// 	if (ret < 0) {
+// 		LOG_ERROR("Pair setup result error: %s\n", pair_setup_errmsg(p->pair_setup_ctx));
+// 		return AIRPLAY_SEQ_ABORT;
+// 	}
 
-	LOG_INFO("Pair setup stage complete, saving authorization key\n");
+// 	LOG_INFO("Pair setup stage complete, saving authorization key\n");
 
-	//   device = outputs_device_get(rs->device_id);
-	//   if (!device)
-	//     return AIRPLAY_SEQ_ABORT;
+// 	//   device = outputs_device_get(rs->device_id);
+// 	//   if (!device)
+// 	//     return AIRPLAY_SEQ_ABORT;
 
-	LOG_WARN("Implement a method to save the authorization key for future use");
-	// free(device->auth_key);
-	// device->auth_key = strdup(authorization_key);
+// 	LOG_WARN("Implement a method to save the authorization key for future use");
+// 	// free(device->auth_key);
+// 	// device->auth_key = strdup(authorization_key);
 
-	// A blocking db call... :-~
-	// db_speaker_save(device);
+// 	// A blocking db call... :-~
+// 	// db_speaker_save(device);
 
-	// No longer AIRPLAY_STATE_AUTH
-	p->state = AIRPLAY_STATE_STOPPED;
+// 	// No longer AIRPLAY_STATE_AUTH
+// 	p->state = AIRPLAY_STATE_STOPPED;
 
-	return AIRPLAY_SEQ_CONTINUE;
-}
+// 	return AIRPLAY_SEQ_CONTINUE;
+// }
 
 /*----------------------- Session Ciphering / Encryption Helpers --------------------------*/
 
@@ -1663,33 +1655,33 @@ bool airplaycl_is_playing(struct airplaycl_s *p)
 }
 
 /*----------------------------------------------------------------------------*/
-static int rsa_encrypt(uint8_t *text, int len, uint8_t *res)
-{
-	RSA *rsa;
-	uint8_t modules[256];
-	uint8_t exponent[8];
-	int size;
-	char n[] =
-			"59dE8qLieItsH1WgjrcFRKj6eUWqi+bGLOX1HL3U3GhC/j0Qg90u3sG/1CUtwC"
-			"5vOYvfDmFI6oSFXi5ELabWJmT2dKHzBJKa3k9ok+8t9ucRqMd6DZHJ2YCCLlDR"
-			"KSKv6kDqnw4UwPdpOMXziC/AMj3Z/lUVX1G7WSHCAWKf1zNS1eLvqr+boEjXuB"
-			"OitnZ/bDzPHrTOZz0Dew0uowxf/+sG+NCK3eQJVxqcaJ/vEHKIVd2M+5qL71yJ"
-			"Q+87X6oV3eaYvt3zWZYD6z5vYTcrtij2VZ9Zmni/UAaHqn9JdsBWLUEpVviYnh"
-			"imNVvYFZeCXg/IdTQ+x4IRdiXNv5hEew==";
-	char e[] = "AQAB";
-	BIGNUM *n_bn, *e_bn;
+// static int rsa_encrypt(uint8_t *text, int len, uint8_t *res)
+// {
+// 	RSA *rsa;
+// 	uint8_t modules[256];
+// 	uint8_t exponent[8];
+// 	int size;
+// 	char n[] =
+// 			"59dE8qLieItsH1WgjrcFRKj6eUWqi+bGLOX1HL3U3GhC/j0Qg90u3sG/1CUtwC"
+// 			"5vOYvfDmFI6oSFXi5ELabWJmT2dKHzBJKa3k9ok+8t9ucRqMd6DZHJ2YCCLlDR"
+// 			"KSKv6kDqnw4UwPdpOMXziC/AMj3Z/lUVX1G7WSHCAWKf1zNS1eLvqr+boEjXuB"
+// 			"OitnZ/bDzPHrTOZz0Dew0uowxf/+sG+NCK3eQJVxqcaJ/vEHKIVd2M+5qL71yJ"
+// 			"Q+87X6oV3eaYvt3zWZYD6z5vYTcrtij2VZ9Zmni/UAaHqn9JdsBWLUEpVviYnh"
+// 			"imNVvYFZeCXg/IdTQ+x4IRdiXNv5hEew==";
+// 	char e[] = "AQAB";
+// 	BIGNUM *n_bn, *e_bn;
 
-	rsa = RSA_new();
-	size = base64_decode(n, modules);
-	n_bn = BN_bin2bn(modules, size, NULL);
-	size = base64_decode(e, exponent);
-	e_bn = BN_bin2bn(exponent, size, NULL);
-	RSA_set0_key(rsa, n_bn, e_bn, NULL);
-	size = RSA_public_encrypt(len, text, res, rsa, RSA_PKCS1_OAEP_PADDING);
-	RSA_free(rsa);
+// 	rsa = RSA_new();
+// 	size = base64_decode(n, modules);
+// 	n_bn = BN_bin2bn(modules, size, NULL);
+// 	size = base64_decode(e, exponent);
+// 	e_bn = BN_bin2bn(exponent, size, NULL);
+// 	RSA_set0_key(rsa, n_bn, e_bn, NULL);
+// 	size = RSA_public_encrypt(len, text, res, rsa, RSA_PKCS1_OAEP_PADDING);
+// 	RSA_free(rsa);
 
-	return size;
-}
+// 	return size;
+// }
 
 /*----------------------------------------------------------------------------*/
 static int airplaycl_encrypt(airplaycl_data_t *airplaycld, uint8_t *data, int size)
@@ -2240,13 +2232,13 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 		LOG_DEBUG("Device ID: %s", device_id);
 	}
 	else {
-		LOG_ERROR("No Device ID. Please raise an issue in github");
+		LOG_ERROR("No Device ID. Please raise an issue in %s", GITHUB);
 		return false;
 	}
 
 	if (strlen(device_id) > AIRPLAY_DEVICE_ID_SIZE) {
 		LOG_ERROR("Device Id %s exceeds maximum size of %d bytes", device_id, AIRPLAY_DEVICE_ID_SIZE);
-		LOG_ERROR("Please raise an issue in github");
+		LOG_ERROR("Please raise an issue in %s", GITHUB);
 		goto erexit;
 	}
 	else {
@@ -2260,13 +2252,13 @@ static bool airplaycl_analyse_info(struct airplaycl_s *p, plist_t pinfo) {
 		LOG_DEBUG("Device ID: %s", name);
 	}
 	else {
-		LOG_ERROR("No Device name. Please raise an issue in github");
+		LOG_ERROR("No Device name. Please raise an issue in %s", GITHUB);
 		return false;
 	}
 
 	if (strlen(name) > AIRPLAY_NAME_SIZE) {
 		LOG_ERROR("Device Id %s exceeds maximum size of %d bytes", name, AIRPLAY_NAME_SIZE);
-		LOG_ERROR("Please raise an issue in github");
+		LOG_ERROR("Please raise an issue in %s", GITHUB);
 		goto erexit;
 	}
 	else {
@@ -2385,11 +2377,44 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 			airplay_rtsp_request_clean(p);
 			airplay_session_status_log_debug(p);
 			LOG_WARN("Need to free the RTSP response body for pair-setup step 2");
+			if (p->rtsp_response.length) {
+				if (*p->rtsp_response.content) free(p->rtsp_response.content);
+				p->rtsp_response.length = 0;
+				LOG_WARN("Freed the RTSP response body for pair-setup step 2");
+			}
+		}
+		else if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL &&
+				 p->state == AIRPLAY_STATE_AUTH &&
+				 p->next_seq == AIRPLAY_SEQ_PIN_START) {
+			// RTSP /pair-pin-start
+			if (payload_make_pin_start(p) == -1) {
+				LOG_ERROR("Error constructing RTSP /pair-pin-start");
+				goto erexit;
+			}
+			airplay_rtsp_request_log_debug(p);
+			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+
+			// Now handle the response and free the response memory
+			LOG_DEBUG("Handling RTSP Response for pair-pin-start");
+			p->next_seq = response_handler_pin_start(p);
+			LOG_DEBUG("Cleaning RTSP request");
+			airplay_rtsp_request_clean(p);
+			LOG_DEBUG("Cleaned RTSP request");
+			airplay_session_status_log_info(p);
+			LOG_WARN("Need to free the RTSP response body for pair-pin-start");
+			if (p->rtsp_response.length) {
+				if (*p->rtsp_response.content) {
+					LOG_DEBUG("free(p->rtsp_response.content)");
+					free(p->rtsp_response.content);
+				}
+				p->rtsp_response.length = 0;
+				LOG_WARN("Freed the RTSP response body for pair-pin-start");
+			}
 		}
 	}
 	else {
 		LOG_ERROR("Pairing scenario not currently supported.");
-		LOG_ERROR("Please open an issue at github.com://music-assistant/libraop");
+		LOG_ERROR("Please open an issue at %s", GITHUB);
 		airplay_session_status_log_info(p);
 	}
 
@@ -2437,7 +2462,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 	LOG_DEBUG("Implement a response handler for SETUP session");
 	airplay_rtsp_request_clean(p);
-	free(p->rtsp_response.content);
+	if (*p->rtsp_response.content) free(p->rtsp_response.content);
 
 
 	p->time_running = true;

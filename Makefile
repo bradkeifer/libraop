@@ -19,7 +19,7 @@ BUILDDIR   = $(dir $(CORE))$(HOST)/$(PLATFORM)
 LIB        = lib/$(HOST)/$(PLATFORM)/libraop.a
 EXECUTABLE = $(CORE)-$(PLATFORM)
 
-DEFINES  = -DNDEBUG -D_GNU_SOURCE -DCONFIG_OPENSSL -DDEBUG_PAIR
+DEFINES  = -DNDEBUG -D_GNU_SOURCE -DCONFIG_OPENSSL -DDEBUG_PAIR -DAIRPLAY_DUMP_TRAFFIC
 CFLAGS  += -Wall -fPIC -ggdb -O2 $(DEFINES) -fdata-sections -ffunction-sections
 LDFLAGS += -lpthread -ldl -lm -lplist -luuid -lsodium -lgcrypt -L.
 
