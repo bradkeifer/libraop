@@ -866,6 +866,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	char *response_header = NULL;
 	char *temp_buf = NULL;
 	char *needle = NULL;
+	char *needle_ptr = NULL;
 	char *header_ptr = NULL;
 	char *line_ptr = NULL;
 
@@ -1049,7 +1050,7 @@ if (rtspcld->cipher_enabled) {
 	needle = strstr(temp_buf, "Content-Length: ");
 	if (needle) {
 		needle += strlen("Content-Length: ");
-		token = strtok(needle, buf_plaintext_delimiters);
+		token = strtok_r(needle, buf_plaintext_delimiters, &needle_ptr);
 		clen = atoi(token);
 		if ((response_body = malloc(clen)) == NULL ) {
 			LOG_ERROR("Unable to malloc %d bytes for response_body. %s", clen, strerror(errno));
@@ -1066,7 +1067,6 @@ if (rtspcld->cipher_enabled) {
 		goto erexit;
 	}
 	if (temp_buf) {
-		LOG_DEBUG("Freeing temp_buf");
 		free(temp_buf);
 		temp_buf = NULL;
 	}
@@ -1084,16 +1084,13 @@ if (rtspcld->cipher_enabled) {
 	}
 
 	line = strtok_r(response_header, buf_plaintext_delimiters, &header_ptr);
-	char *status_line = NULL;
-	asprintf(&status_line, "%s", line);
-	token = strtok_r(status_line, delimiters, &line_ptr);
+	token = strtok_r(line, delimiters, &line_ptr);
 	if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
 		rtspcld->rtsp_response = true;
 	}
 	else {
 		rtspcld->rtsp_response = false;
 		LOG_ERROR("Invalid RTSP/1.0 Response");
-		if (status_line) free(status_line);
 		goto erexit;
 	}
 	token = strtok_r(NULL, delimiters, &line_ptr);
@@ -1106,7 +1103,6 @@ if (rtspcld->cipher_enabled) {
 			strcat(rtspcld->description, " ");
 		}
 	}
-	if (status_line) free(status_line);
 
 	i = 0;
 	clen = 0;
@@ -1115,9 +1111,6 @@ if (rtspcld->cipher_enabled) {
 	pkd[0].key = NULL;
 
 	while ((line = strtok_r(NULL, buf_plaintext_delimiters, &header_ptr))) {
-		LOG_DEBUG("line: %s", line);
-		hexdump("Line:", (uint8_t *)line, strlen(line));
-		memset(resp_line, 0, sizeof(resp_line));
 		strncpy(resp_line, line, sizeof(resp_line));
 		LOG_DEBUG("[%p]: <------ : %s", rtspcld, resp_line);
 
@@ -1131,8 +1124,12 @@ if (rtspcld->cipher_enabled) {
 		dp = strstr(resp_line,":");
 
 		if (!dp){
-			LOG_ERROR("[%p]: Request failed, bad header", rtspcld);
-			goto erexit;
+			LOG_ERROR("[%p]:Ignoring bad header data", rtspcld);
+			// I think there may be an implementation bug in strtok_r. 
+			// We sometimes get an extraneous character instead of
+			// strtok_r returning NULL at the end. In which case, we will
+			// continue instead of erexiting.
+			continue;
 		}
 
 		*dp = 0;
