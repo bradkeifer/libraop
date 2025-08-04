@@ -936,8 +936,6 @@ static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t 
 	struct airplaycl_s *p = (struct airplaycl_s *)vp;
 
 
-	// in = evbuffer_pullup(inbuf, -1);
-	// in_len = evbuffer_get_length(inbuf);
 	in = buf_in;
 	in_len = buf_in_len;
 
@@ -951,13 +949,13 @@ static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t 
 		}
 #endif
 
-		processed = pair_encrypt(&buf_out, buf_out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		processed = pair_encrypt(&buf_out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
 		}
 	}
 	else {
-		processed = pair_decrypt(&buf_out, buf_out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		processed = pair_decrypt(&buf_out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
 		}
@@ -972,8 +970,8 @@ static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t 
 #endif
 	}
 
-	// evbuffer_drain(inbuf, processed);
-	// evbuffer_add(outbuf, out, out_len);
+	*buf_out_len = out_len;
+	LOG_DEBUG("%s: In:%zu, Out:%zu:%zu", encrypt ? "Encrypted" : "Decrypted", in_len, out_len, *buf_out_len);
 
 	return 0;
 
@@ -1100,7 +1098,7 @@ static int payload_make_pin_start(struct airplaycl_s *p)
 // @param p the AirPlay client handle
 // @param step	the step number in the pairing sequence
 // @returns 0 on success, -1 on failure
-// @note The RTSP Request Headers and PAyload information in the AirPlay client handle
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
 // @note are updated by the function. The caller is responsible for ensuring clean RTSP
 // @note request data before initiation.
 static int payload_make_pair_generic(struct airplaycl_s *p, int step)
@@ -1160,7 +1158,7 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 // @param p the AirPlay client handle
 // @param arg the PIN to use for pairing
 // @returns 0 on success, -1 on failure
-// @note The RTSP Request Headers and PAyload information in the AirPlay client handle
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
 // @note are updated by the function. The caller is responsible for ensuring clean RTSP
 // @note request data before initiation.
 static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)

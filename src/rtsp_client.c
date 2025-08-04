@@ -875,7 +875,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	rtspcld->description[0] = 0;
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
-	if (content && (length = 0 || !content_type)) return false;
+	if (content && (length == 0 || !content_type)) return false;
 
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLOUT;
@@ -970,7 +970,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		memcpy(buf_raw, buf_plaintext, len_plaintext);
 		len_raw = len_plaintext;
 	}
-
+	LOG_DEBUG("Sending %zu bytes of %s data", len_raw, rtspcld->cipher_enabled ? "encrypted" : "plain text");
 	rval = send(rtspcld->fd, buf_raw, len_raw, 0);
 	if (rval != len_raw) {
 	   LOG_ERROR( "[%p]: couldn't write request (%d!=%d)", rtspcld, rval, len_raw);
@@ -1025,7 +1025,7 @@ if (rtspcld->cipher_enabled) {
 		rtspcld->ciphercb(rtspcld->ciphercb_arg, buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
 	}
 	else {
-		LOG_DEBUG("Encryption not required. length %d", len_raw);
+		LOG_DEBUG("Decryption not required. length %d", len_raw);
 		memcpy(buf_plaintext, buf_raw, len_raw);
 		len_plaintext = len_raw;
 	}
@@ -1220,7 +1220,6 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	// rtspcl_clear_response(response); // - this is the responsibility of the prior caller
 	if (!p) return false;
 
-	LOG_DEBUG("About to call exec_request_buf");
 	if (!exec_request_buf(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
