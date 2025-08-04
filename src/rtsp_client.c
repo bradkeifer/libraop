@@ -58,7 +58,7 @@ typedef struct rtspcl_s {
 	char description[256];	// The description of the status code
 	int read_timeout;		// ms timeout for reading RTSP Response
 	bool cipher_enabled;	// true if RTSP encryption/decryption enabled
-	int (*ciphercb)(void *, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
+	int (*ciphercb)(void *, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 	void *ciphercb_arg;
 
 } rtspcl_t;
@@ -869,6 +869,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	char *needle_ptr = NULL;
 	char *header_ptr = NULL;
 	char *line_ptr = NULL;
+	float cipher_ratio = 0.0;
 
 	rtspcld->rtsp_response = false;
 	rtspcld->status_code = 0;
@@ -891,7 +892,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		LOG_ERROR("Unable to allocate output plaintext memory. %s", strerror(errno));
 		goto erexit;
 	}
-	buf_raw = calloc(1, RTSP_MAX_MESSAGE);
+	buf_raw = calloc(1, (int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	if (!buf_raw) {
 		LOG_ERROR("Unable to allocate output raw memory. %s", strerror(errno));
 		goto erexit;
@@ -959,11 +960,17 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	}
 
 #ifdef AIRPLAY_DUMP_TRAFFIC
-	hexdump("RTSP Request\n", buf_plaintext, len_plaintext);
+	hexdump("RTSP Request - Plaintext\n", buf_plaintext, len_plaintext);
 #endif
 	if (rtspcld->cipher_enabled) {
 		LOG_DEBUG("Encrypting");
-		rtspcld->ciphercb(rtspcld->ciphercb_arg, buf_raw, &len_raw, buf_plaintext, len_plaintext, 1);
+		rtspcld->ciphercb(rtspcld->ciphercb_arg, &buf_raw, &len_raw, buf_plaintext, len_plaintext, 1);
+		cipher_ratio = (float)len_raw/(float)len_plaintext;
+		LOG_DEBUG("Cipher Ratio: %0.2f", cipher_ratio);
+		if (cipher_ratio > CIPHER_RATIO) {
+			LOG_ERROR("Actual Cipher Ratio (%0.2f) exceeds assumed (%0.2f)", cipher_ratio, CIPHER_RATIO);
+			LOG_ERROR("Please raise a github issue at %s", GITHUB);
+		}
 	}
 	else {
 		LOG_DEBUG("Encryption not required. Copying %d bytes to buf_raw", len_plaintext);
@@ -971,6 +978,9 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		len_raw = len_plaintext;
 	}
 	LOG_DEBUG("Sending %zu bytes of %s data", len_raw, rtspcld->cipher_enabled ? "encrypted" : "plain text");
+#ifdef AIRPLAY_DUMP_TRAFFIC
+	hexdump("RTSP Request - Raw\n", buf_raw, len_raw);
+#endif
 	rval = send(rtspcld->fd, buf_raw, len_raw, 0);
 	if (rval != len_raw) {
 	   LOG_ERROR( "[%p]: couldn't write request (%d!=%d)", rtspcld, rval, len_raw);
@@ -1022,7 +1032,13 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 
 if (rtspcld->cipher_enabled) {
 		LOG_DEBUG("Decrypting. length %d", len_raw);
-		rtspcld->ciphercb(rtspcld->ciphercb_arg, buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
+		rtspcld->ciphercb(rtspcld->ciphercb_arg, &buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
+		cipher_ratio = (float)len_raw/(float)len_plaintext;
+		LOG_DEBUG("Cipher Ratio: %0.2f", cipher_ratio);
+		if (cipher_ratio > CIPHER_RATIO) {
+			LOG_ERROR("Actual Cipher Ratio (%0.2f) exceeds assumed (%0.2f)", cipher_ratio, CIPHER_RATIO);
+			LOG_ERROR("Please raise a github issue at %s", GITHUB);
+		}
 	}
 	else {
 		LOG_DEBUG("Decryption not required. length %d", len_raw);
@@ -1143,6 +1159,11 @@ if (rtspcld->cipher_enabled) {
 	pkd[i].key = NULL;
 	if (pkd->key[0]) kd_free(pkd);
 
+	if (buf_plaintext) free(buf_plaintext);
+	if (buf_raw) free(buf_raw);
+	if (temp_buf) free(temp_buf);
+	if (response_header) free(response_header);
+	// NOTE: The caller is responsible for freeing the response_body information
 	return true;
 
 erexit:
@@ -1305,7 +1326,7 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 }
 
 void rtspcl_set_ciphercb(struct rtspcl_s *p, 
-	int (*cb)(void *, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt), 
+	int (*cb)(void *, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt), 
 	void *cbarg) {
 
 		p->ciphercb = cb;

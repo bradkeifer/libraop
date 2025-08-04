@@ -33,6 +33,8 @@ typedef struct rtp_port_s {
 #define RTSP_MAX_BODY		1024	// Maximum size of RTSP message body supported by this implementation
 #define RTSP_MAX_KD_LENGTH	256		// The maximum length of either key or data string supported in the RTSP Header key data by this implementation
 #define RTSP_MAX_MESSAGE	4096	// the maximum size of a RTSP Request or Response message
+#define GITHUB "https://github.com/bradkeifer/libraop"
+#define CIPHER_RATIO 1.2	// to ensure buffer sizes are adequate
 
 // Content-Types
 #define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
@@ -117,6 +119,6 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
  *
  */
 void rtspcl_set_ciphercb(struct rtspcl_s *p, 
-	int (*cb)(void *, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt), void *);
+	int (*cb)(void *, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt), void *);
 
 #endif

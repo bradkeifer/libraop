@@ -26,7 +26,6 @@
 #include "common.h"
 
 #define AIRPLAY_LATENCY_MIN 11025
-#define GITHUB "https://github.com/bradkeifer/libraop"
 
 typedef struct airplaycl_t {uint32_t dummy;} airplaycl_t;
 

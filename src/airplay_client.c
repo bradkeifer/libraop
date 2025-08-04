@@ -421,7 +421,7 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, const char *data);
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
-static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
+static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
@@ -926,7 +926,7 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 // @param inbuf the data to be encrypted/decrypted
 // @param encrypt encryption if value os non-zero, decryption if value is zero.
 // @note this needs to move back into airplay.c to remain aligned with owntones derived design
-static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt)
+static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt)
 {
 	uint8_t *in;
 	size_t in_len;
@@ -949,13 +949,13 @@ static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t 
 		}
 #endif
 
-		processed = pair_encrypt(&buf_out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		processed = pair_encrypt(&out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
 		}
 	}
 	else {
-		processed = pair_decrypt(&buf_out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
+		processed = pair_decrypt(&out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
 		}
@@ -970,6 +970,7 @@ static int rtsp_cipher(void *vp, uint8_t *buf_out, size_t *buf_out_len, uint8_t 
 #endif
 	}
 
+	*buf_out = out;
 	*buf_out_len = out_len;
 	LOG_DEBUG("%s: In:%zu, Out:%zu:%zu", encrypt ? "Encrypted" : "Decrypted", in_len, out_len, *buf_out_len);
 
@@ -2456,7 +2457,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		goto erexit;
 	}
 	airplay_rtsp_request_log_debug(p);
-	LOG_DEBUG("rtsp_cipher(%p), AirPlay 2 Client handle(%p)", rtsp_cipher, p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 	LOG_DEBUG("Implement a response handler for SETUP session");
 	airplay_rtsp_request_clean(p);
