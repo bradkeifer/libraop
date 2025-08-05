@@ -63,6 +63,7 @@
 #define AIRPLAY_PLIST_SESSION_UUID 					"sessionUUID"
 #define AIRPLAY_PLIST_TIMING_PORT 					"timingPort"
 #define AIRPLAY_PLIST_TIMING_PROTOCOL 				"timingProtocol"
+#define AIRPLAY_PLIST_EVENT_PORT 					"eventPort"
 
 // Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
@@ -421,7 +422,8 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, const char *data);
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
-static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
+
+static void airplay_rtsp_response_log_debug(struct airplaycl_s *p);
 
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
@@ -448,8 +450,10 @@ static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p);
 // static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
 
+static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
 /*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
 
+static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_t key_len);
 static void chacha_close(gcry_cipher_hd_t hd);
 static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
@@ -920,6 +924,27 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	return true;
 }
 
+// LOG_DEBUG the current state of the RTSP Response
+// @param p the AirPlay 2 Client Handle
+static void airplay_rtsp_response_log_debug(struct airplaycl_s *p){
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay client handle");
+		return;
+	}
+	if (*loglevel < lDEBUG) return;
+	if (!p->rtsp_response.rtsp_response) {
+		LOG_DEBUG("There is no RTSP Response");
+		return;
+	}
+
+	LOG_DEBUG("RTSP Response %d %s", p->rtsp_response.status_code, p->rtsp_response.description);
+	LOG_DEBUG("Content Type: %s", p->rtsp_response.content_type);
+	LOG_DEBUG("RTSP Body length: %d", p->rtsp_response.length);
+	if (p->rtsp_response.length) {
+		hexdump("Body\n", (uint8_t *)p->rtsp_response.content, p->rtsp_response.length);
+	}
+}
+
 // Callback function for encrypting or decrypting RTSP data
 // @param p the AirPlay 2 Session Client handle
 // @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
@@ -1073,6 +1098,7 @@ static bool airplay_session_sequence_start(struct airplaycl_s *p) {
 		LOG_ERROR("No RTSP content returned from rtspcl_get_info()");
 		return false;
 	}
+	airplay_rtsp_response_log_debug(p); // something has already modified rtsp_response.content before here!
 	LOG_DEBUG("About the analyse info (%p), content-type %s", p->rtsp_response.content, p->rtsp_response.content_type);
 	if (!airplaycl_analyse_info(p, (plist_t)p->rtsp_response.content)) {
 		LOG_ERROR("Unable to analyse GET /info plist\n");
@@ -1141,7 +1167,7 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 	}
 
 	LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
-	hexdump("Output buffer\n", body, len);
+	if (*loglevel >= lDEBUG) hexdump("Output buffer\n", body, len);
 	LOG_DEBUG("errmsg is %s", errmsg);
 	airplay_rtsp_body_add(p, body, len);
 	free(body);
@@ -1211,7 +1237,7 @@ payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p)
 {
 	// struct output_device *device;
-	plist_t response =(plist_t)p->rtsp_response.content;
+	plist_t response =(plist_t)p->rtsp_response.content; // this is a bit dangerous. Really should check Content-Type first
 	plist_t item;
 	// int ret;
 
@@ -1233,7 +1259,9 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	// 	return AIRPLAY_SEQ_ABORT;
 	// }
 
+	LOG_DEBUG("Getting dict item %s", AIRPLAY_PLIST_STATUS_FLAGS);
 	item = plist_dict_get_item(response, "statusFlags");
+	LOG_DEBUG("Got item");
 	if (item) plist_get_uint_val(item, &p->status_flags);
 
 	plist_free(response);
@@ -1451,6 +1479,80 @@ error:
 
 // 	return AIRPLAY_SEQ_CONTINUE;
 // }
+
+static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p)
+{
+	plist_t response = NULL;
+	plist_t item = NULL;
+	uint64_t uintval = 0;
+	char *data = NULL;
+	// int ret;
+
+	if (p->rtsp_response.status_code == RTSP_UNAUTHORIZED) {
+		if (p->auth){
+			LOG_ERROR("Bad or missing password for device %s", p->name);
+			return AIRPLAY_SEQ_ABORT;
+		}
+
+		// We haven't tried authenticating yet, so save realm and nonce from the
+		// received WWW-Authenticate header and trigger a re-run with auth header
+		LOG_WARN("Need to implement auth_header_parse()");
+		return AIRPLAY_SEQ_ABORT;
+		// ret = auth_header_parse(p);
+		// if (ret < 0)
+		// 	return AIRPLAY_SEQ_ABORT;
+
+		// return AIRPLAY_SEQ_START_PLAYBACK;
+	}
+	else if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_WARN("Unexpected reply (%d %s) to SETUP (session) from %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description, p->name);
+		return AIRPLAY_SEQ_ABORT;
+	}
+	else if (!strncmp(p->rtsp_response.content_type, 
+			AIRPLAY_CONTENT_TYPE_PLIST, 
+			strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
+		LOG_ERROR("Invalid content type in RTSP Response. Expected %s, but got %s",
+			AIRPLAY_CONTENT_TYPE_PLIST, p->rtsp_response.content_type);
+		return AIRPLAY_SEQ_ABORT;
+	}
+	p->rtp_ports.ctrl.rport = 0;
+
+	if (!(data = malloc(p->rtsp_response.length))) {
+		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
+		goto error;
+	}
+	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
+	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
+
+	item = plist_dict_get_item(response, AIRPLAY_PLIST_EVENT_PORT);
+	if (item) {
+		plist_get_uint_val(item, &uintval);
+		// rs->events_port = uintval;
+		p->rtp_ports.ctrl.rport = uintval;
+	}
+
+	item = plist_dict_get_item(response, AIRPLAY_PLIST_TIMING_PORT);
+	if (item) {
+		plist_get_uint_val(item, &uintval);
+		// rs->timing_port = uintval;
+		p->rtp_ports.time.rport = uintval;
+	}
+
+	if (p->rtp_ports.ctrl.rport == 0) {
+		LOG_ERROR("SETUP reply is missing event port\n");
+		goto error;
+	}
+
+	if (response) plist_free(response);
+	if (data) free(data);
+	return AIRPLAY_SEQ_CONTINUE;
+
+	error:
+	if (response) plist_free(response);
+	if (data) free(data);
+	return AIRPLAY_SEQ_ABORT;
+}
 
 /*----------------------- Session Ciphering / Encryption Helpers --------------------------*/
 
@@ -2451,18 +2553,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	if (p->rtp_ports.time.fd < 0) goto erexit;
 
 
-	// RTSP SETUP (session)
-	if (payload_make_setup_session(p) == -1) {
-		LOG_ERROR("Error constructing RTSP SETUP (session)");
-		goto erexit;
-	}
-	airplay_rtsp_request_log_debug(p);
-	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	LOG_DEBUG("Implement a response handler for SETUP session");
-	airplay_rtsp_request_clean(p);
-	if (*p->rtsp_response.content) free(p->rtsp_response.content);
-
-
 	p->time_running = true;
 	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
 
@@ -2481,6 +2571,29 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	} while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
 
 	if (p->rtp_ports.audio.fd < 0) goto erexit;
+
+	// RTSP SETUP (session)
+	if (payload_make_setup_session(p) == -1) {
+		LOG_ERROR("Error constructing RTSP SETUP (session)");
+		goto erexit;
+	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	LOG_DEBUG("Handling response for setup_session. Content type: %s, length %d",
+		p->rtsp_response.content_type, p->rtsp_response.length);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_setup_session(p);
+	airplay_rtsp_request_clean(p);
+	LOG_WARN("Need to free the RTSP response body for setup (session)");
+	if (p->rtsp_response.length) {
+		if (*p->rtsp_response.content) {
+			LOG_DEBUG("free(p->rtsp_response.content)");
+			free(p->rtsp_response.content);
+		}
+		p->rtsp_response.length = 0;
+		LOG_WARN("Freed the RTSP response body for setup (session)");
+	}
+	airplay_session_status_log_info(p);
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
 	LOG_DEBUG( "[%p]:opened timing socket  l:%5d r:%d", p, p->rtp_ports.time.lport, p->rtp_ports.time.rport );

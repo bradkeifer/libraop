@@ -1157,7 +1157,7 @@ if (rtspcld->cipher_enabled) {
 	}
 	
 	pkd[i].key = NULL;
-	if (pkd->key[0]) kd_free(pkd);
+	if (!rkd) kd_free(pkd);
 
 	if (buf_plaintext) free(buf_plaintext);
 	if (buf_raw) free(buf_raw);
@@ -1286,7 +1286,7 @@ static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_res
 	resp->rtsp_response = p->rtsp_response;
 	resp->status_code = p->status_code;
 	strncpy(resp->description, p->description, sizeof(resp->description));
-	if (kd == NULL) {
+	if ((kd == NULL) || !kd->key) {
 		LOG_WARN("No key data in RTSP response header");
 		return;
 	}
