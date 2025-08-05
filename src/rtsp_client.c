@@ -81,7 +81,6 @@ static bool exec_request_buf(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 key_data_t *kd, char **resp_content, int *resp_len,
 			 char* url);
 
-			 static void rtspcl_clear_response(rtsp_response_t *response);
 static void rtspcl_process_header_response(rtspcl_t *p, key_data_t *kd, rtsp_response_t *resp);
 static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rtsp_response_t *resp);
 
@@ -849,7 +848,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 
 	char resp_line[2048] = "";
 	char *line;
-	char buf[128];
+	char buf[512];
 	const char delimiters[] = " ";
 	const char buf_plaintext_delimiters[] = "\r\n";
 	char *token,*dp;
@@ -875,8 +874,11 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	rtspcld->status_code = 0;
 	rtspcld->description[0] = 0;
 
-	if (!rtspcld || rtspcld->fd == -1) return false;
-	if (content && (length == 0 || !content_type)) return false;
+	if (!rtspcld || rtspcld->fd == -1) {
+		LOG_ERROR("Invalid RTSP Client Handle (%p) or RTSP file descriptor (%d)",
+			rtspcld, rtspcld->fd);
+		return false;
+	}
 
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLOUT;
@@ -1177,55 +1179,6 @@ erexit:
 	return false;
 }
 
-
-// Requests GET /info from the Airplay device and returns the plist received.
-// @param p the RTSP client handle
-// @param resp the RTSP response from the AirPlay device.  Memory is allocation as required.
-// @returns true on success, false on failure
-// @note It is the responsibility of the caller to free the memory allocated for the response data
-bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp) {
-	char *resp_content = NULL;
-	int resp_len = 0;
-	plist_t pinfo = NULL;
-	key_data_t rkd[MAX_KD] = { 0 };
-
-	rtspcl_clear_response(resp);
-	if (!p) return false;
-
-	if (!exec_request_buf(p, "GET /info", NULL, NULL, 0, 1, NULL, rkd, (char **) &resp_content, &resp_len, NULL)) {
-		LOG_ERROR("exec request failed. Response length =%d", resp_len);
-		goto erexit;
-	}
-
-	rtspcl_process_header_response(p, rkd, resp);
-
-	if (!strncmp(resp->content_type, AIRPLAY_CONTENT_TYPE_PLIST, strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
-		LOG_ERROR("Expected Content-Type %s, but got %s", AIRPLAY_CONTENT_TYPE_PLIST, resp->content_type);
-		goto erexit;
-	}
-
-	plist_from_bin(resp_content, resp_len, &pinfo);
-
-	if (!pinfo) {
-		LOG_ERROR("Unable to extract plist from GET /info response.\n");
-		goto erexit;
-	}
-	resp->length = resp_len;
-	if (!(resp->content = malloc(resp_len))) {
-		LOG_ERROR("Unable to allocate memory for response content. %s", strerror(errno));
-		goto erexit;
-	}
-	memcpy(resp->content, pinfo, resp_len);
-	if (rkd[0].key) kd_free(rkd);
-	if (resp->content) free(resp_content);
-	return true;
-
-  erexit:
-	if (rkd[0].key) kd_free(rkd);
-	if (resp->content) free(resp_content);
-	return false;
-}
-
 // Process a RTSP Request and update caller with details of the RTSP Response
 // @param p the RTSP client handle
 // @param request the RTSP Request information
@@ -1238,8 +1191,10 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	// plist_t pinfo = NULL;
 	key_data_t rkd[MAX_KD] = { 0 };
 
-	// rtspcl_clear_response(response); // - this is the responsibility of the prior caller
-	if (!p) return false;
+	if (!p) {
+		LOG_ERROR("Invalid RTSP Client Handle");
+		return false;
+	}
 
 	if (!exec_request_buf(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
@@ -1254,23 +1209,6 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 
 erexit:
 	return false;
-}
-
-
-// Clears the RTSP response data from the RTSP client handle
-// @param response pointer to the RTSP response handle
-// @todo <@bradkeifer> - can we guard against a "double free" scenario?
-static void rtspcl_clear_response(rtsp_response_t *response) {
-	// LOG_DEBUG("response->rtsp_response = %d", response->rtsp_response);
-	// LOG_DEBUG("response->content = %p, %c", response->content, *response->content);
-	response->rtsp_response = false;
-	response->status_code = 0;
-	response->description[0] = 0;
-	response->content_type[0] = 0;
-	response->length = 0;
-	if (response->content && *response->content) free(response->content); // In case prior consumer did not free
-	response->content = NULL;
-	return;
 }
 
 // Extracts the RTSP response header information required for the AirPlay2 functions
