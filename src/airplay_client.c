@@ -1017,6 +1017,7 @@ static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t
 		}
 	}
 	else {
+		LOG_DEBUG("Decrypting. length %d", buf_in_len);
 		processed = pair_decrypt(&out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
@@ -1074,13 +1075,13 @@ static int payload_make_setup_session(struct airplaycl_s *p)
 	plist_to_bin(root, &out, &out_len);
 	if (!out) {
 		LOG_ERROR("Unable to convert plist to binary");
-		plist_free(root);
+		// plist_free(root);
 		return -1;
 	}
 	data = (uint8_t *)out;
 	len = out_len;
 
-	plist_free(root);
+	// plist_free(root);
 
 	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETUP);
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
@@ -1268,10 +1269,10 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	data = (uint8_t *)out;
 	len = out_len;
 
-	if (root) {
-		LOG_DEBUG("plist_free root");
-		plist_free(root);
-	}
+	// if (root) {
+	// 	LOG_DEBUG("plist_free root");
+	// 	plist_free(root);
+	// }
 	// if (add) {
 	// 	LOG_DEBUG("plist_free add");
 	// 	plist_free(add);
@@ -1315,6 +1316,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
+	LOG_DEBUG("malloc(data):%p", data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -1380,10 +1382,10 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		// plist_free(item);
 	}
 
-	LOG_DEBUG("About to plist_free(item)");
-	plist_free(item);
-	LOG_DEBUG("About to plist_free(response)");
-	plist_free(response);
+	// LOG_DEBUG("About to plist_free(item)");
+	// plist_free(item);
+	// LOG_DEBUG("About to plist_free(response)");
+	// plist_free(response);
 
 	LOG_DEBUG("Status flags from '%s' was %" PRIu64 ": cable attached %d, one time pairing %d, password %d, PIN %d",
 	p->name, p->status_flags, (bool)(p->status_flags & AIRPLAY_FLAG_AUDIO_CABLE_ATTACHED), (bool)(p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED),
@@ -1437,7 +1439,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	}
 
 	if (data) {
-		LOG_DEBUG("About to free(data)");
+		LOG_DEBUG("About to free(data):%p", data);
 		free(data);
 	}
 	return seq;;
@@ -1692,6 +1694,7 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
+	LOG_DEBUG("malloc(data):%p", data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -1714,11 +1717,14 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 		goto error;
 	}
 
-	if (response) {
-		LOG_DEBUG("About to plist_free(response)");
-		plist_free(response);
-	}
-	// if (data) free(data);
+	// if (response) {
+	// 	LOG_DEBUG("About to plist_free(response)");
+	// 	plist_free(response);
+	// }
+	// if (data) {
+	// 	LOG_DEBUG("free(data):%p", data);
+	// 	free(data);
+	// }
 	return AIRPLAY_SEQ_CONTINUE;
 
 	error:
@@ -2329,6 +2335,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	}
 
 	airplaycld = malloc(sizeof(airplaycl_data_t));
+	LOG_DEBUG("malloc(airplaycld):%p", airplaycld);
 	memset(airplaycld, 0, sizeof(airplaycl_data_t));
 
 	//  airplaycld->sane is set to 0
@@ -2695,11 +2702,13 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// kd_free(kd);
 
 	// Create the RTP timing thread
+	LOG_DEBUG("Create RTP timing thread");
 	p->time_running = true;
 	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
 	LOG_INFO("Timing thread running");
 
 	// Create the RTP control thread
+	LOG_DEBUG("Create RTP control thread");
 	p->ctrl_running = true;
 	pthread_create(&p->ctrl_thread, NULL, _rtp_control_thread, (void*) p);
 	LOG_INFO("Control thread running");
@@ -2715,7 +2724,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// }
 
 	if (sac) {
-		LOG_DEBUG("About to free(sac)");
+		LOG_DEBUG("free(sac):%p", sac);
 		free(sac);
 	}
 	LOG_DEBUG("Returning true");
@@ -2779,6 +2788,7 @@ bool airplaycl_destroy(struct airplaycl_s *p)
 
 	if (p->alac_codec) alac_delete_encoder(p->alac_codec);
 
+	LOG_DEBUG("free(p):%p", p);
 	free(p);
 
 	return rc;

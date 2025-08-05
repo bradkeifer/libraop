@@ -94,6 +94,7 @@ int rtspcl_get_serv_sock(struct rtspcl_s *p) {
 /*----------------------------------------------------------------------------*/
 struct rtspcl_s *rtspcl_create(char *useragent) {
 	rtspcl_t* rtspcld = malloc(sizeof(rtspcl_t));
+	LOG_DEBUG("malloc(rtspcld):%p", rtspcld);
 	memset(rtspcld, 0, sizeof(rtspcl_t));
 	rtspcld->useragent = useragent;
 	rtspcld->fd = -1;
@@ -173,6 +174,7 @@ bool rtspcl_destroy(struct rtspcl_s *p) {
 	if (!p) return false;
 
 	bool rc = rtspcl_disconnect(p);
+	LOG_DEBUG("free(p):%p", p);
 	free(p);
 
 	return rc;
@@ -646,6 +648,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
 
 	if ((req = malloc(4096+length)) == NULL) return false;
+	LOG_DEBUG("malloc(req):%p", req);
 
 	sprintf(req, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
 
@@ -709,6 +712,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	rval = send(rtspcld->fd, req, len, 0);
 	LOG_DEBUG( "[%p]: ----> : write %s", rtspcld, req );
 	LOG_DEBUG("Wrote %d bytes", rval);
+	LOG_DEBUG("free(req):%p", req);
 	free(req);
 
 	if (rval != len) {
@@ -792,6 +796,7 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 
 	if (clen) {
 		char *data = malloc(clen);
+		LOG_DEBUG("malloc(data):%p", data);
 		int size = 0;
 
 		while (data && size < clen) {
@@ -809,7 +814,11 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		if (resp_content) {
 			*resp_content = data;
 			if (resp_len) *resp_len = clen;
-		} else free(data);
+		} 
+		else {
+			LOG_DEBUG("free(data):%p", data);
+			free(data);
+		}
 	}
 
 	pkd[i].key = NULL;
@@ -894,12 +903,14 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		LOG_ERROR("Unable to allocate output plaintext memory. %s", strerror(errno));
 		goto erexit;
 	}
+	LOG_DEBUG("malloc(buf_plaintext):%p", buf_plaintext);
 	memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
 	buf_raw = malloc((int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	if (!buf_raw) {
 		LOG_ERROR("Unable to allocate output raw memory. %s", strerror(errno));
 		goto erexit;
 	}
+	LOG_DEBUG("malloc(buf_raw):%p", buf_raw);
 	memset(buf_raw, 0, (int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	
 
@@ -934,19 +945,19 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 
 	// add digest if we have a password
 	if (*rtspcld->digest.ha1) {
-		char* buf, digest[32+1];
-		asprintf(&buf, "%s:%s", cmd, url ? url : rtspcld->url);
+		char* buf_digest, digest[32+1];
+		asprintf(&buf_digest, "%s:%s", cmd, url ? url : rtspcld->url);
 		unsigned char ha2_bin[16], ha2[32+1];
-		MD5((uint8_t*) buf, strlen(buf), ha2_bin);
+		MD5((uint8_t*) buf_digest, strlen(buf_digest), ha2_bin);
 
-		free(buf); buf = (char*) ha2;
-		bytes2hex(ha2_bin, sizeof(ha2_bin), &buf);
-		asprintf(&buf, "%s:%s:%s", rtspcld->digest.ha1, rtspcld->digest.nonce, ha2);
+		free(buf_digest); buf_digest = (char*) ha2;
+		bytes2hex(ha2_bin, sizeof(ha2_bin), &buf_digest);
+		asprintf(&buf_digest, "%s:%s:%s", rtspcld->digest.ha1, rtspcld->digest.nonce, ha2);
 		unsigned char digest_bin[16];
-		MD5((uint8_t*) buf, strlen(buf), digest_bin);
+		MD5((uint8_t*) buf_digest, strlen(buf_digest), digest_bin);
 
-		free(buf); buf = digest;
-		bytes2hex(digest_bin, sizeof(digest_bin), &buf);
+		free(buf_digest); buf_digest = digest;
+		bytes2hex(digest_bin, sizeof(digest_bin), &buf_digest);
 
 		sprintf((char *)buf_plaintext + strlen((char *)buf_plaintext), 
 			"Authorization: Digest username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\"\r\n", 
@@ -993,11 +1004,11 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	if (!get_response) {
 		// Free allocated memory and return true.
 		if (buf_plaintext) {
-			LOG_DEBUG("About to free buf_plaintext due to no get_response");
+			LOG_DEBUG("free(buf_plaintext):%p due to no get_response", buf_plaintext);
 			free(buf_plaintext);
 		}
 		if (buf_raw) {
-			LOG_DEBUG("About to free buf_raw due to no get_response");
+			LOG_DEBUG("free(buf_raw):%p due to no get_response", buf_raw);
 			free(buf_raw);
 		}
 		return true;
@@ -1064,6 +1075,7 @@ if (rtspcld->cipher_enabled) {
 		LOG_ERROR("Unable to allocate memory for temporary buffer. %s", strerror(errno));
 		goto erexit;
 	}
+	LOG_DEBUG("malloc(temp_buf):%p", temp_buf);
 	memcpy(temp_buf, buf_plaintext, len_plaintext);
 	// null terminate temp_buf, just to be safe for strstr call
 	if (len_plaintext < RTSP_MAX_MESSAGE) {
@@ -1082,6 +1094,7 @@ if (rtspcld->cipher_enabled) {
 			LOG_ERROR("Unable to malloc %d bytes for response_body. %s", clen, strerror(errno));
 			goto erexit;
 		}
+		LOG_DEBUG("malloc(response_body):%p", response_body);
 		memcpy(response_body, (buf_plaintext + len_plaintext - clen) , clen);
 	}
 	else {
@@ -1092,6 +1105,7 @@ if (rtspcld->cipher_enabled) {
 		LOG_ERROR("Unable to malloc %d bytes for response header", len_plaintext - clen);
 		goto erexit;
 	}
+	LOG_DEBUG("malloc(response_header):%p", response_header);
 	memcpy(response_header, buf_plaintext, len_plaintext - clen);
 	*(response_header + len_plaintext - clen + 1) = '\0'; // null terminate response header
 
@@ -1164,24 +1178,24 @@ if (rtspcld->cipher_enabled) {
 	
 	pkd[i].key = NULL;
 	if (!rkd) {
-		LOG_DEBUG("About to kd_free(pkd)");
+		LOG_DEBUG("kd_free(pkd):%p", pkd);
 		kd_free(pkd);
 	}
 
 	if (buf_plaintext) {
-		LOG_DEBUG("About to free(buf_plaintext)");
+		LOG_DEBUG("free(buf_plaintext):%p", buf_plaintext);
 		free(buf_plaintext);
 	}
 	if (buf_raw) {
-		LOG_DEBUG("About to free(buf_raw)");
+		LOG_DEBUG("free(buf_raw):%p", buf_raw);
 		free(buf_raw);
 	}
 	if (temp_buf) {
-		LOG_DEBUG("About to free temp_buf");
+		LOG_DEBUG("free(temp_buf):%p", temp_buf);
 		free(temp_buf);
 	}
 	if (response_header) {
-		LOG_DEBUG("About to free(response_header)");
+		LOG_DEBUG("free(response_header):%p", response_header);
 		free(response_header);
 	}
 	// NOTE: The caller is responsible for freeing the response_body information
@@ -1282,6 +1296,7 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 		LOG_ERROR("Unable to malloc memory for returning RTSP Response body. %s", strerror(errno));
 		return;
 	}
+	LOG_DEBUG("malloc(resp->content):%p", resp->content);
 	memcpy(resp->content, body, len);
 	resp->length = len;
 
