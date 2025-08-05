@@ -889,16 +889,18 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	// Allocate memory buffers for plain text and encrypted data. Maxmimum RTSP Message size is 4096 bytes
 	// Presumably this is also enough for encrypted exchanges?? - Perhaps not.
 	// @todo check and validate sizing requirements for encrypted data
-	buf_plaintext = calloc(1, RTSP_MAX_MESSAGE);
+	buf_plaintext = malloc(RTSP_MAX_MESSAGE);
 	if (!buf_plaintext) {
 		LOG_ERROR("Unable to allocate output plaintext memory. %s", strerror(errno));
 		goto erexit;
 	}
-	buf_raw = calloc(1, (int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
+	memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
+	buf_raw = malloc((int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	if (!buf_raw) {
 		LOG_ERROR("Unable to allocate output raw memory. %s", strerror(errno));
 		goto erexit;
 	}
+	memset(buf_raw, 0, (int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	
 
 	sprintf((char *)buf_plaintext, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
@@ -990,8 +992,14 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 
 	if (!get_response) {
 		// Free allocated memory and return true.
-		if (buf_plaintext) free(buf_plaintext);
-		if (buf_raw) free(buf_raw);
+		if (buf_plaintext) {
+			LOG_DEBUG("About to free buf_plaintext due to no get_response");
+			free(buf_plaintext);
+		}
+		if (buf_raw) {
+			LOG_DEBUG("About to free buf_raw due to no get_response");
+			free(buf_raw);
+		}
 		return true;
 	}
 
@@ -1084,10 +1092,6 @@ if (rtspcld->cipher_enabled) {
 		LOG_ERROR("Unable to malloc %d bytes for response header", len_plaintext - clen);
 		goto erexit;
 	}
-	if (temp_buf) {
-		free(temp_buf);
-		temp_buf = NULL;
-	}
 	memcpy(response_header, buf_plaintext, len_plaintext - clen);
 	*(response_header + len_plaintext - clen + 1) = '\0'; // null terminate response header
 
@@ -1159,17 +1163,32 @@ if (rtspcld->cipher_enabled) {
 	}
 	
 	pkd[i].key = NULL;
-	if (!rkd) kd_free(pkd);
+	if (!rkd) {
+		LOG_DEBUG("About to kd_free(pkd)");
+		kd_free(pkd);
+	}
 
-	if (buf_plaintext) free(buf_plaintext);
-	if (buf_raw) free(buf_raw);
-	if (temp_buf) free(temp_buf);
-	if (response_header) free(response_header);
+	if (buf_plaintext) {
+		LOG_DEBUG("About to free(buf_plaintext)");
+		free(buf_plaintext);
+	}
+	if (buf_raw) {
+		LOG_DEBUG("About to free(buf_raw)");
+		free(buf_raw);
+	}
+	if (temp_buf) {
+		LOG_DEBUG("About to free temp_buf");
+		free(temp_buf);
+	}
+	if (response_header) {
+		LOG_DEBUG("About to free(response_header)");
+		free(response_header);
+	}
 	// NOTE: The caller is responsible for freeing the response_body information
 	return true;
 
 erexit:
-	LOG_ERROR("erexiting");
+	LOG_ERROR("erexiting and freeing allocated memory buffers");
 	if (buf_plaintext) free(buf_plaintext);
 	if (buf_raw) free(buf_raw);
 	if (pkd && pkd->key[0]) kd_free(pkd);
@@ -1196,13 +1215,19 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 		return false;
 	}
 
+	LOG_DEBUG("request->command: %s", request->command);
+	LOG_DEBUG("request->content-type: %s", request->content_type);
+	LOG_DEBUG("request->body.length: %d", request->body.length);
+	if (*loglevel >- lDEBUG) hexdump("Body\n", (uint8_t *)request->body.mem, request->body.length);
 	if (!exec_request_buf(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);
 		goto erexit;
 	}
 
+	LOG_DEBUG("About to process header response");
 	rtspcl_process_header_response(p, rkd, response);
+	LOG_DEBUG("About to process body respose. Body length is %d", resp_len);
 	rtspcl_process_body_response(p, resp_content, resp_len, response);
 
 	return true;
