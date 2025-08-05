@@ -424,7 +424,7 @@ static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
 
 static void airplay_rtsp_response_log_debug(struct airplaycl_s *p);
-
+static void airplay_rtsp_response_clean(struct airplaycl_s *p);
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
 static int payload_make_setup_session(struct airplaycl_s *p);
@@ -945,6 +945,28 @@ static void airplay_rtsp_response_log_debug(struct airplaycl_s *p){
 	}
 }
 
+// Clean RTSP Response data and free allocated memory
+// @param p the AirPlay 2 Client Handle
+static void airplay_rtsp_response_clean(struct airplaycl_s *p){
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay client handle");
+		return;
+	}
+	if (!p->rtsp_response.rtsp_response) {
+		LOG_DEBUG("There is no RTSP Response");
+		return;
+	}
+
+	LOG_DEBUG("Cleaning RTSP Response data");
+	p->rtsp_response.content_type[0] = '\0';
+	p->rtsp_response.description[0] = '\0'; 
+	p->rtsp_response.rtsp_response = false;
+	p->rtsp_response.status_code = 0;
+	if (p->rtsp_response.length) free(p->rtsp_response.content);
+	p->rtsp_response.length = 0;
+	LOG_DEBUG("RTSP Response data cleaned");
+}
+
 // Callback function for encrypting or decrypting RTSP data
 // @param p the AirPlay 2 Session Client handle
 // @param outbuf the ciphering buffer where the results of encryption/decryption will be returned
@@ -1326,6 +1348,7 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 		p->next_seq = AIRPLAY_SEQ_START_PLAYBACK; // Pair and then run SEQ_START_PLAYBACK which sets up the playback
 	}
 
+	// airplay_rtsp_response_clean(p);
 	return seq_type;
 }
 
@@ -1334,9 +1357,10 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 // @returns the next sequence
 static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p)
 {
-  p->state = AIRPLAY_STATE_AUTH;
+	p->state = AIRPLAY_STATE_AUTH;
 
-  return AIRPLAY_SEQ_CONTINUE; // TODO before we reported failure since device is locked
+	airplay_rtsp_response_clean(p);
+	return AIRPLAY_SEQ_CONTINUE; // TODO before we reported failure since device is locked
 }
 
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
@@ -1404,9 +1428,11 @@ static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 
 		LOG_DEBUG("Returing next sequence=AIRPLAY_SEQ_PIN_START, "
 			"with pair_type PAIR_CLIENT_HOMEKIT_NORMAL");
+		airplay_rtsp_response_clean(p);
 		return AIRPLAY_SEQ_PIN_START;
 	}
 
+	airplay_rtsp_response_clean(p);
 	return response_handler_pair_generic(1, p);
 }
 
@@ -1418,11 +1444,13 @@ static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 	int ret;
 
 	seq_type = response_handler_pair_generic(2, p);
-	if (seq_type != AIRPLAY_SEQ_CONTINUE)
-	return seq_type;
+	if (seq_type != AIRPLAY_SEQ_CONTINUE) {
+		goto early_return;
+	}
 
-	if (p->pair_type != PAIR_CLIENT_HOMEKIT_TRANSIENT)
-	return seq_type;
+	if (p->pair_type != PAIR_CLIENT_HOMEKIT_TRANSIENT) {
+		goto early_return;
+	}
 
 	ret = pair_setup_result(NULL, &result, p->pair_setup_ctx);
 	if (ret < 0) {
@@ -1437,10 +1465,16 @@ static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 		goto error;
 	}
 
+	airplay_rtsp_response_clean(p);
 	return AIRPLAY_SEQ_CONTINUE;
+
+early_return:
+	airplay_rtsp_response_clean(p);
+	return seq_type;
 
 error:
 	p->state = AIRPLAY_STATE_FAILED;
+	airplay_rtsp_response_clean(p);
 	return AIRPLAY_SEQ_ABORT;
 }
 
@@ -1477,6 +1511,7 @@ error:
 // 	// No longer AIRPLAY_STATE_AUTH
 // 	p->state = AIRPLAY_STATE_STOPPED;
 
+//  airplay_rtsp_response_clean(p);
 // 	return AIRPLAY_SEQ_CONTINUE;
 // }
 
@@ -1491,13 +1526,13 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 	if (p->rtsp_response.status_code == RTSP_UNAUTHORIZED) {
 		if (p->auth){
 			LOG_ERROR("Bad or missing password for device %s", p->name);
-			return AIRPLAY_SEQ_ABORT;
+			goto error;
 		}
 
 		// We haven't tried authenticating yet, so save realm and nonce from the
 		// received WWW-Authenticate header and trigger a re-run with auth header
 		LOG_WARN("Need to implement auth_header_parse()");
-		return AIRPLAY_SEQ_ABORT;
+		goto error;
 		// ret = auth_header_parse(p);
 		// if (ret < 0)
 		// 	return AIRPLAY_SEQ_ABORT;
@@ -1507,14 +1542,14 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 	else if (p->rtsp_response.status_code != RTSP_OK) {
 		LOG_WARN("Unexpected reply (%d %s) to SETUP (session) from %s", 
 			p->rtsp_response.status_code, p->rtsp_response.description, p->name);
-		return AIRPLAY_SEQ_ABORT;
+		goto error;
 	}
 	else if (!strncmp(p->rtsp_response.content_type, 
 			AIRPLAY_CONTENT_TYPE_PLIST, 
 			strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
 		LOG_ERROR("Invalid content type in RTSP Response. Expected %s, but got %s",
 			AIRPLAY_CONTENT_TYPE_PLIST, p->rtsp_response.content_type);
-		return AIRPLAY_SEQ_ABORT;
+		goto error;
 	}
 	p->rtp_ports.ctrl.rport = 0;
 
@@ -1546,11 +1581,13 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 
 	if (response) plist_free(response);
 	if (data) free(data);
+	airplay_rtsp_response_clean(p);
 	return AIRPLAY_SEQ_CONTINUE;
 
 	error:
 	if (response) plist_free(response);
 	if (data) free(data);
+	airplay_rtsp_response_clean(p);
 	return AIRPLAY_SEQ_ABORT;
 }
 
