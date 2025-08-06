@@ -468,7 +468,6 @@ static bool airplay_rtsp_command_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_command_add(struct airplaycl_s *p, char *command);
 static bool airplay_rtsp_content_type_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_type);
-// static int airplay_rtsp_headers_get_count(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, const char *data);
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
@@ -864,18 +863,6 @@ static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_t
 
 	return true;
 }
-
-// Get the number of RTSP Headers currently stored
-// @param p the AirPlay client handle
-// @returns the number of RTSP Headers or -1 on error.
-// static int airplay_rtsp_headers_get_count(struct airplaycl_s *p) {
-// 	if (!p) {
-// 		LOG_ERROR("Invalid AirPlay client handle");
-// 		return -1;
-// 	}
-
-// 	return p->rtsp_request.headers.count;
-// }
 
 // Clean/reset the RTSP request Headers buffer
 // @param p the AirPlay client handle
