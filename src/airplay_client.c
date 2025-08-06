@@ -462,7 +462,6 @@ static const char* airplay_pair_type_str(enum pair_type pair_type);
 
 /* ----------------------- RTSP Helpers --------------------------------*/
 
-// static void airplay_rtsp_request_log_info(struct airplaycl_s *p);
 static void airplay_rtsp_request_log_debug(struct airplaycl_s *p);
 static bool airplay_rtsp_request_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_command_clean(struct airplaycl_s *p);
@@ -475,7 +474,6 @@ static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, con
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
 
-static void airplay_rtsp_response_log_info(struct airplaycl_s *p);
 static void airplay_rtsp_response_log_debug(struct airplaycl_s *p);
 static void airplay_rtsp_response_clean(struct airplaycl_s *p);
 static void airplay_rtsp_response_init(struct airplaycl_s *p);
@@ -988,27 +986,6 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	if (*loglevel >= lDEBUG) hexdump("Body\n", (uint8_t *)p->rtsp_request.body.mem, p->rtsp_request.body.length);
 	return true;
 }
-
-// LOG_INFO the current state of the RTSP Response
-// @param p the AirPlay 2 Client Handle
-// static void airplay_rtsp_response_log_info(struct airplaycl_s *p){
-// 	if (!p) {
-// 		LOG_ERROR("Invalid AirPlay client handle");
-// 		return;
-// 	}
-// 	if (*loglevel < lINFO) return;
-// 	if (!p->rtsp_response.rtsp_response) {
-// 		LOG_DEBUG("There is no RTSP Response");
-// 		return;
-// 	}
-
-// 	LOG_INFO("RTSP Response %d %s", p->rtsp_response.status_code, p->rtsp_response.description);
-// 	LOG_INFO("Content Type: %s", p->rtsp_response.content_type);
-// 	LOG_INFO("RTSP Body length: %d", p->rtsp_response.length);
-// 	if (p->rtsp_response.length) {
-// 		hexdump("Body\n", (uint8_t *)p->rtsp_response.content, p->rtsp_response.length);
-// 	}
-// }
 
 // LOG_DEBUG the current state of the RTSP Response
 // @param p the AirPlay 2 Client Handle
