@@ -26,6 +26,7 @@ typedef struct rtp_port_s {
 	sock_info_t time;
 	sock_info_t	ctrl;
 	sock_info_t audio;
+	sock_info_t events;	// New for AirPlay 2
 } rtp_port_t;
 
 // Added for AirPlay2 support

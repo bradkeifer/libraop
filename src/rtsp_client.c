@@ -903,15 +903,15 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		LOG_ERROR("Unable to allocate output plaintext memory. %s", strerror(errno));
 		goto erexit;
 	}
-	LOG_DEBUG("malloc(buf_plaintext):%p", buf_plaintext);
+	LOG_DEBUG("malloc(buf_plaintext):%d, %p", RTSP_MAX_MESSAGE, buf_plaintext);
 	memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
 	buf_raw = malloc((int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	if (!buf_raw) {
 		LOG_ERROR("Unable to allocate output raw memory. %s", strerror(errno));
 		goto erexit;
 	}
-	LOG_DEBUG("malloc(buf_raw):%p", buf_raw);
-	memset(buf_raw, 0, (int)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
+	LOG_DEBUG("malloc(buf_raw):%d, %p", (size_t)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE), buf_raw);
+	memset(buf_raw, 0, (size_t)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
 	
 
 	sprintf((char *)buf_plaintext, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
@@ -978,8 +978,12 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	hexdump("RTSP Request - Plaintext\n", buf_plaintext, len_plaintext);
 #endif
 	if (rtspcld->cipher_enabled) {
-		LOG_DEBUG("Encrypting");
+		// NOTE: Must free(buf_raw) pre-decryption, because callback allocates the required memory
+		LOG_DEBUG("free(buf_raw):%p", buf_raw);
+		free(buf_raw);
+		LOG_DEBUG("Encrypting into buf_raw(%p)", buf_raw);
 		rtspcld->ciphercb(rtspcld->ciphercb_arg, &buf_raw, &len_raw, buf_plaintext, len_plaintext, 1);
+		LOG_DEBUG("buf_raw after encryption(%p)", buf_raw);
 		cipher_ratio = (float)len_raw/(float)len_plaintext;
 		LOG_DEBUG("Cipher Ratio: %0.2f", cipher_ratio);
 		if (cipher_ratio > CIPHER_RATIO) {
@@ -1015,10 +1019,11 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	}
 
 	// Zero data transfer buffers in preparation for receiving RTSP Response just to be safe
-	memset(buf_raw, 0, RTSP_MAX_MESSAGE);
-	len_raw = 0;
-	memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
-	len_plaintext = 0;
+	// valgrind complains about the below statement with "nvalid write of size 8"
+	// memset(buf_raw, 0, (size_t)( (float)CIPHER_RATIO * (float)RTSP_MAX_MESSAGE));
+	// len_raw = 0;
+	// memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
+	// len_plaintext = 0;
 
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLIN;
@@ -1052,8 +1057,12 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 #endif
 
 if (rtspcld->cipher_enabled) {
-		LOG_DEBUG("Decrypting. length %d", len_raw);
+		// NOTE: Must free(buf_plaintext) pre-decryption, because callback allocates the required memory
+		LOG_DEBUG("free(buf_plaintext):%p", buf_plaintext);
+		free(buf_plaintext);
+		LOG_DEBUG("Decrypting. length %d into buf_plaintext(%p)", len_raw, buf_plaintext);
 		rtspcld->ciphercb(rtspcld->ciphercb_arg, &buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
+		LOG_DEBUG("buf_plaintext post decryption is %p", buf_plaintext);
 		cipher_ratio = (float)len_raw/(float)len_plaintext;
 		LOG_DEBUG("Cipher Ratio: %0.2f", cipher_ratio);
 		if (cipher_ratio > CIPHER_RATIO) {
@@ -1068,14 +1077,14 @@ if (rtspcld->cipher_enabled) {
 	}
 
 	// We now have a complete RTSP Response message in buf_plaintext. This will consist of a Header and a Body.
-	// The Body may be non-ascii. We should split buf_plaintext into two data buffers for each of the Header and the Body
-	// This will make parsing the data much simpler and robust.
+	// The Body may be non-ascii. We should split buf_plaintext into two data buffers for each of the Header 
+	// and the Body. This will make parsing the data much simpler and robust.
 	temp_buf = malloc(len_plaintext+1); // need +1 in order to allow null termination
 	if (!temp_buf) {
 		LOG_ERROR("Unable to allocate memory for temporary buffer. %s", strerror(errno));
 		goto erexit;
 	}
-	LOG_DEBUG("malloc(temp_buf):%p", temp_buf);
+	LOG_DEBUG("malloc(temp_buf):%d:%p", len_plaintext+1, temp_buf);
 	memcpy(temp_buf, buf_plaintext, len_plaintext);
 	// null terminate temp_buf, just to be safe for strstr call
 	if (len_plaintext < RTSP_MAX_MESSAGE) {
@@ -1090,12 +1099,17 @@ if (rtspcld->cipher_enabled) {
 		needle += strlen("Content-Length: ");
 		token = strtok_r(needle, buf_plaintext_delimiters, &needle_ptr);
 		clen = atoi(token);
-		if ((response_body = malloc(clen)) == NULL ) {
-			LOG_ERROR("Unable to malloc %d bytes for response_body. %s", clen, strerror(errno));
-			goto erexit;
+		if (clen == 0) {
+			response_body = NULL;
 		}
-		LOG_DEBUG("malloc(response_body):%p", response_body);
-		memcpy(response_body, (buf_plaintext + len_plaintext - clen) , clen);
+		else {
+			if ((response_body = malloc(clen)) == NULL ) {
+				LOG_ERROR("Unable to malloc %d bytes for response_body. %s", clen, strerror(errno));
+				goto erexit;
+			}
+			LOG_DEBUG("malloc(response_body):%d:%p", clen, response_body);
+			memcpy(response_body, (buf_plaintext + len_plaintext - clen) , clen);
+		}
 	}
 	else {
 		clen = 0;
@@ -1105,9 +1119,9 @@ if (rtspcld->cipher_enabled) {
 		LOG_ERROR("Unable to malloc %d bytes for response header", len_plaintext - clen);
 		goto erexit;
 	}
-	LOG_DEBUG("malloc(response_header):%p", response_header);
+	LOG_DEBUG("malloc(response_header):%d, %p", len_plaintext - clen + 1, response_header);
 	memcpy(response_header, buf_plaintext, len_plaintext - clen);
-	*(response_header + len_plaintext - clen + 1) = '\0'; // null terminate response header
+	*(response_header + len_plaintext - clen) = '\0'; // null terminate response header
 
 	if (resp_content && resp_len) {
 		*resp_len = clen;
@@ -1241,12 +1255,18 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 
 	LOG_DEBUG("About to process header response");
 	rtspcl_process_header_response(p, rkd, response);
-	LOG_DEBUG("About to process body respose. Body length is %d", resp_len);
+	if (rkd->key[0]) kd_free(rkd);
+	LOG_DEBUG("About to process body respose. Body length is %d. Address is %p", resp_len, resp_content);
 	rtspcl_process_body_response(p, resp_content, resp_len, response);
+	if (resp_content) {
+		LOG_DEBUG("free(resp_content):%p", resp_content);
+		free(resp_content);
+	}
 
 	return true;
 
 erexit:
+	if (rkd->key[0]) kd_free(rkd);
 	return false;
 }
 
@@ -1292,11 +1312,16 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 		return;
 	}
 
+	if (len == 0) {
+		resp->length = len;
+		return;
+	}
+
 	if (!(resp->content = malloc(len))) {
 		LOG_ERROR("Unable to malloc memory for returning RTSP Response body. %s", strerror(errno));
 		return;
 	}
-	LOG_DEBUG("malloc(resp->content):%p", resp->content);
+	LOG_DEBUG("malloc(resp->content):%d: %p", len, resp->content);
 	memcpy(resp->content, body, len);
 	resp->length = len;
 

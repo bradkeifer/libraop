@@ -76,6 +76,17 @@
 
 // from owntones
 
+#define AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT     44100
+#define AIRPLAY_QUALITY_BITS_PER_SAMPLE_DEFAULT 16
+#define AIRPLAY_QUALITY_CHANNELS_DEFAULT        2
+
+// AirTunes v2 number of samples per packet
+// Probably using this value because 44100/352 and 48000/352 has good 32 byte
+// alignment, which improves performance of some encoders
+#define AIRPLAY_SAMPLES_PER_PACKET              352
+
+#define AIRPLAY_RTP_PAYLOADTYPE                 0x60
+
 // For transient pairing the key_len will be 64 bytes, but only 32 are used for
 // audio payload encryption. For normal pairing the key is 32 bytes.
 #define AIRPLAY_AUDIO_KEY_LEN 32
@@ -172,6 +183,40 @@ enum airplay_status_flags
 #define AIRPLAY_FRAC(ntp) ((uint32_t) (ntp))
 #define AIRPLAY_SECNTP(ntp) AIRPLAY_SEC(ntp),AIRPLAY_FRAC(ntp)
 #define AIRPLAY_MSEC(ntp)  ((uint32_t) ((((ntp) >> 16)*1000) >> 16))
+
+/* --------------------------- SEQUENCE DEFINITIONS ------------------------- */
+
+// struct airplay_seq_definition
+// {
+//   enum airplay_seq_type seq_type;
+
+//   // Called when a sequence ends, successfully or not. Shoulds also, if
+//   // required, take care of notifying  player and free the session.
+//   void (*on_success)(struct airplay_session *rs);
+//   void (*on_error)(struct airplay_session *rs);
+// };
+
+// struct airplay_seq_request
+// {
+//   enum airplay_seq_type seq_type;
+//   const char *name; // Name of request (for logging)
+//   enum evrtsp_cmd_type rtsp_type;
+//   int (*payload_make)(struct evrtsp_request *req, struct airplay_session *rs, void *arg);
+//   enum airplay_seq_type (*response_handler)(struct evrtsp_request *req, struct airplay_session *rs);
+//   const char *content_type;
+//   const char *uri;
+//   bool proceed_on_rtsp_not_ok; // If true return code != RTSP_OK will not abort the sequence
+// };
+
+// struct airplay_seq_ctx
+// {
+//   struct airplay_seq_request *cur_request;
+//   void (*on_success)(struct airplay_session *rs);
+//   void (*on_error)(struct airplay_session *rs);
+//   struct airplay_session *session;
+//   void *payload_make_arg;
+//   const char *log_caller;
+// };
 
 /* -------------------- MISC GLOBALS derived from owntone ------------------------------ */
 
@@ -371,6 +416,7 @@ typedef struct airplaycl_s {
 	uint16_t port_base, port_range;
 	char passwd[64];
 
+	uint32_t	session_id;	// Added for AirPlay2
 	char session_uuid[37];	// Added for AirPlay2
 	uint64_t status_flags;	// Added for AirPlay2
 	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
@@ -444,6 +490,10 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step);
 static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg);
 static int payload_make_pair_setup2(struct airplaycl_s *p, void* arg);
 // static int payload_make_pair_setup3(struct airplaycl_s *p, void* arg);
+
+static int payload_make_setup_session(struct airplaycl_s *p);
+static int payload_make_setup_stream(struct airplaycl_s *p);
+
 static int payload_make_setpeers(struct airplaycl_s *p);
 
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
@@ -457,6 +507,7 @@ static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 // static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
 
 static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
 /*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
 
 static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
@@ -1075,17 +1126,21 @@ static int payload_make_setup_session(struct airplaycl_s *p)
 	plist_to_bin(root, &out, &out_len);
 	if (!out) {
 		LOG_ERROR("Unable to convert plist to binary");
-		// plist_free(root);
+		if (root) plist_free(root);
 		return -1;
 	}
 	data = (uint8_t *)out;
 	len = out_len;
 
-	// plist_free(root);
+	if (root) plist_free(root);
 
 	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETUP);
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
 	airplay_rtsp_body_add(p, data, len);
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
+	}
 
 	return 0;
 }
@@ -1235,6 +1290,161 @@ payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
 // 	return payload_make_pair_generic(p, 3);
 // }
 
+
+/*
+Audio formats
+
+Bit 	Value 	Type
+2 	0x4 	PCM/8000/16/1
+3 	0x8 	PCM/8000/16/2
+4 	0x10 	PCM/16000/16/1
+5 	0x20 	PCM/16000/16/2
+6 	0x40 	PCM/24000/16/1
+7 	0x80 	PCM/24000/16/2
+8 	0x100 	PCM/32000/16/1
+9 	0x200 	PCM/32000/16/2
+10 	0x400 	PCM/44100/16/1
+11 	0x800 	PCM/44100/16/2
+12 	0x1000 	PCM/44100/24/1
+13 	0x2000 	PCM/44100/24/2
+14 	0x4000 	PCM/48000/16/1
+15 	0x8000 	PCM/48000/16/2
+16 	0x10000 	PCM/48000/24/1
+17 	0x20000 	PCM/48000/24/2
+18 	0x40000 	ALAC/44100/16/2
+19 	0x80000 	ALAC/44100/24/2
+20 	0x100000 	ALAC/48000/16/2
+21 	0x200000 	ALAC/48000/24/2
+22 	0x400000 	AAC-LC/44100/2
+23 	0x800000 	AAC-LC/48000/2
+24 	0x1000000 	AAC-ELD/44100/2
+25 	0x2000000 	AAC-ELD/48000/2
+26 	0x4000000 	AAC-ELD/16000/1
+27 	0x8000000 	AAC-ELD/24000/1
+28 	0x10000000 	OPUS/16000/1
+29 	0x20000000 	OPUS/24000/1
+30 	0x40000000 	OPUS/48000/1
+31 	0x80000000 	AAC-ELD/44100/1
+32 	0x100000000 	AAC-ELD/48000/1
+*/
+
+// Construct the RTSP Request for SETUP stream
+// @param p the AirPlay2 Client Handle
+// @returns 0 on success, -1 on failure
+static int payload_make_setup_stream(struct airplaycl_s *p)
+{
+	plist_t root = NULL;
+	plist_t item = NULL;
+	plist_t streams = NULL;
+	plist_t stream = NULL;
+	char *out = NULL;
+	uint32_t out_len = 0;
+	uint8_t *data = (uint8_t *)NULL;
+	size_t len = 0;
+
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay 2 Client Handle");
+		return -1;
+	}
+
+	LOG_DEBUG("Creating new plist dict");
+	stream = plist_new_dict();
+
+	// wplist_dict_add_uint(stream, "audioFormat", 262144); 
+	// 0x40000 ALAC/44100/16/2
+	item = plist_new_uint(262144);
+	plist_dict_set_item(stream, "audioFormat", item);
+
+
+	// wplist_dict_add_string(stream, "audioMode", "default");
+	item = plist_new_string("default");
+	plist_dict_set_item(stream, "audioMode", item);
+
+
+	// wplist_dict_add_uint(stream, "controlPort", rs->control_svc->port);
+	item = plist_new_uint(p->rtp_ports.ctrl.lport);
+	plist_dict_set_item(stream, "controlPort", item);
+
+	// wplist_dict_add_uint(stream, "ct", 2); 
+	// Compression type, 1 LPCM, 2 ALAC, 3 AAC, 4 AAC ELD, 32 OPUS
+	item = plist_new_uint(2);
+	plist_dict_set_item(stream, "ct", item);
+
+	// wplist_dict_add_bool(stream, "isMedia", true);
+	item = plist_new_bool(true);
+	plist_dict_set_item(stream, "isMedia", item);
+
+	// wplist_dict_add_uint(stream, "latencyMax", 88200); // TODO how do these latencys work?
+	item = plist_new_uint(88200);
+	plist_dict_set_item(stream, "latencyMax", item);
+
+	// wplist_dict_add_uint(stream, "latencyMin", 11025);
+	item = plist_new_uint(11025);
+	plist_dict_set_item(stream, "latencyMin", item);
+
+	// wplist_dict_add_data(stream, "shk", rs->shared_secret, AIRPLAY_AUDIO_KEY_LEN);
+	item = plist_new_data((const char *)p->secret, AIRPLAY_AUDIO_KEY_LEN);
+	plist_dict_set_item(stream, "shk", item);
+
+
+	// wplist_dict_add_uint(stream, "spf", AIRPLAY_SAMPLES_PER_PACKET); 
+	// frames per packet
+	item = plist_new_uint(AIRPLAY_SAMPLES_PER_PACKET);
+	plist_dict_set_item(stream, "spf", item);
+
+	// wplist_dict_add_uint(stream, "sr", AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT); 
+	// sample rate
+	item = plist_new_uint(AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT);
+	plist_dict_set_item(stream, "sr", item);
+
+	// wplist_dict_add_uint(stream, "type", AIRPLAY_RTP_PAYLOADTYPE); 
+	// RTP type, 0x60 = 96 real time, 103 buffered
+	item = plist_new_uint(AIRPLAY_RTP_PAYLOADTYPE);
+	plist_dict_set_item(stream, "type", item);
+
+	// wplist_dict_add_bool(stream, "supportsDynamicStreamID", false);
+	item = plist_new_bool(false);
+	plist_dict_set_item(stream, "supportsDynamicStreamID", item);
+
+	// wplist_dict_add_uint(stream, "streamConnectionID", rs->session_id); 
+	// Hopefully fine since we have one stream per session
+	LOG_WARN("Need to implement a Session ID into the AirPlay 2 Client Handle");
+	// item = plist_new_uint(p->session_uuid);
+	// plist_dict_set_item(stream, "streamConnectionID", item);
+
+	streams = plist_new_array();
+	plist_array_append_item(streams, stream);
+
+	root = plist_new_dict();
+	plist_dict_set_item(root, "streams", streams);
+
+	// ret = wplist_to_bin(&data, &len, root);
+	plist_to_bin(root, &out, &out_len);
+	if (!out) {
+		LOG_ERROR("Unable to convert plist to binary");
+		goto error;
+	}
+	data = (uint8_t *)out;
+	len = out_len;
+
+
+	plist_free(root);
+
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETUP);
+	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
+	airplay_rtsp_body_add(p, data, len);
+
+	return 0;
+
+error:
+	if (root) {
+		LOG_DEBUG("About to plist_free(root)");
+		plist_free(root);
+	}
+	if (*out) free(out);
+	return -1;
+}
+
 // Contract RTSP Request for SETPEERS
 // @param p the AirPlay 2 Client Handle
 // @returns 0 on success, -1 on failure
@@ -1251,13 +1461,13 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	LOG_DEBUG("Creating new plist array");
 	root = plist_new_array();
 
-	LOG_DEBUG("Peer address %s, Host address %s", inet_ntoa(p->peer_addr), inet_ntoa(p->host_addr));
+	LOG_DEBUG("AirPlay device address %s, Local address %s", inet_ntoa(p->peer_addr), rtspcl_local_ip(p->rtspcl));
 	add = plist_new_string(inet_ntoa(p->peer_addr));
-	LOG_DEBUG("Appending peer address to plist");
+	LOG_DEBUG("Appending AirPlay device address to plist");
 	plist_array_append_item(root, add);
 
-	add = plist_new_string(inet_ntoa(p->host_addr));
-	LOG_DEBUG("Appending host address to plist");
+	add = plist_new_string(rtspcl_local_ip(p->rtspcl));
+	LOG_DEBUG("Appending local address to plist");
 	plist_array_append_item(root, add);
 
 	LOG_DEBUG("Converting plist to binary");
@@ -1269,18 +1479,17 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	data = (uint8_t *)out;
 	len = out_len;
 
-	// if (root) {
-	// 	LOG_DEBUG("plist_free root");
-	// 	plist_free(root);
-	// }
-	// if (add) {
-	// 	LOG_DEBUG("plist_free add");
-	// 	plist_free(add);
-	// }
+	if (root) {
+		LOG_DEBUG("plist_free root");
+		plist_free(root);
+	}
 
 	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETPEERS);
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
 	airplay_rtsp_body_add(p, data, len);
+
+	LOG_DEBUG("free(data):%p", data);
+	free(data);
 
 	return 0;
 
@@ -1289,11 +1498,10 @@ error:
 		LOG_DEBUG("About to plist_free(root)");
 		plist_free(root);
 	}
-	if (add) {
-		LOG_DEBUG("About to plist_free(add)");
-		plist_free(add);
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
 	}
-	// if (*out) free(out);
 	return -1;
 }
 
@@ -1316,7 +1524,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
-	LOG_DEBUG("malloc(data):%p", data);
+	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -1325,7 +1533,6 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	if (item) {
 		device_id = (char *) plist_get_string_ptr(item, NULL);
 		LOG_DEBUG("Device ID: %s", device_id);
-		// plist_free(item);
 	}
 	else {
 		LOG_ERROR("No Device ID. Please raise an issue in %s", GITHUB);
@@ -1346,7 +1553,6 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	if (item) {
 		name = (char *) plist_get_string_ptr(item, NULL);
 		LOG_DEBUG("Device ID: %s", name);
-		// plist_free(item);
 	}
 	else {
 		LOG_ERROR("No Device name. Please raise an issue in %s", GITHUB);
@@ -1367,7 +1573,6 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	if (item) {
 		plist_get_uint_val(item, &p->features);
 		LOG_INFO("%s has features %" PRIX64 "\n", p->name, p->features);
-		// plist_free(item);
 	}
 	if (!airplaycl_assess_features(p)) {
 		LOG_ERROR("%s does not meet minimum capability for us to support", p->name);
@@ -1379,13 +1584,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	LOG_DEBUG("Got item");
 	if (item) {
 		plist_get_uint_val(item, &p->status_flags);
-		// plist_free(item);
 	}
-
-	// LOG_DEBUG("About to plist_free(item)");
-	// plist_free(item);
-	// LOG_DEBUG("About to plist_free(response)");
-	// plist_free(response);
 
 	LOG_DEBUG("Status flags from '%s' was %" PRIu64 ": cable attached %d, one time pairing %d, password %d, PIN %d",
 	p->name, p->status_flags, (bool)(p->status_flags & AIRPLAY_FLAG_AUDIO_CABLE_ATTACHED), (bool)(p->status_flags & AIRPLAY_FLAG_ONE_TIME_PAIRING_REQUIRED),
@@ -1421,7 +1620,8 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 
 		if (!p->passwd[0]) {
 			LOG_DEBUG("'%s requires password authentication, but none given in config", p->name);
-			return AIRPLAY_SEQ_ABORT;
+			seq = AIRPLAY_SEQ_ABORT;
+			goto error;
 		}
 		// else if (!device->auth_key) {
 		// 	p->state = AIRPLAY_STATE_AUTH;
@@ -1438,17 +1638,17 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		seq = AIRPLAY_SEQ_PAIR_TRANSIENT;
 	}
 
+	if (response) {
+		LOG_DEBUG("About to plist_free(response)");
+		plist_free(response);
+	}
 	if (data) {
-		LOG_DEBUG("About to free(data):%p", data);
+		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return seq;;
 
 error:
-	if (item) {
-		LOG_DEBUG("About to plist_free(item)");
-		plist_free(item);
-	}
 	if (response) {
 		LOG_DEBUG("About to plist_free(response)");
 		plist_free(response);
@@ -1504,6 +1704,10 @@ static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p)
 	return AIRPLAY_SEQ_CONTINUE; // TODO before we reported failure since device is locked
 }
 
+// Common response handler for the various pairing scenarios. This handler determines the
+// pair setup context from the RTSP Response data and returns the appropriate airplay sequence.
+// @param step the pairing step number
+// @param p the AirPlay 2 Client Handle
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
 {
 	uint8_t *response;
@@ -1556,12 +1760,6 @@ static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
 		p->rtsp_response.status_code == RTSP_CONNECTION_AUTH_REQUIRED) {
 
-		// I suspect this deals with the case where the device is removed by owntones.
-		// Not sure if there is a MASS equivalent?
-		// device = outputs_device_get(rs->device_id);
-		// if (!device)
-		// 	return AIRPLAY_SEQ_ABORT;
-
 		if (!p->auth) {
 			LOG_WARN("%s defined as not requiring authorisation, but it does", p->name);
 			p->auth = true;
@@ -1584,6 +1782,7 @@ static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 	int ret;
 
 	seq_type = response_handler_pair_generic(2, p);
+	
 	if (seq_type != AIRPLAY_SEQ_CONTINUE) {
 		goto early_return;
 	}
@@ -1694,37 +1893,35 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
-	LOG_DEBUG("malloc(data):%p", data);
+	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
 	item = plist_dict_get_item(response, AIRPLAY_PLIST_EVENT_PORT);
 	if (item) {
 		plist_get_uint_val(item, &uintval);
-		// rs->events_port = uintval;
-		p->rtp_ports.ctrl.rport = uintval;
+		p->rtp_ports.events.rport = uintval;
 	}
 
 	item = plist_dict_get_item(response, AIRPLAY_PLIST_TIMING_PORT);
 	if (item) {
 		plist_get_uint_val(item, &uintval);
-		// rs->timing_port = uintval;
 		p->rtp_ports.time.rport = uintval;
 	}
 
-	if (p->rtp_ports.ctrl.rport == 0) {
+	if (p->rtp_ports.events.rport == 0) {
 		LOG_ERROR("SETUP reply is missing event port\n");
 		goto error;
 	}
 
-	// if (response) {
-	// 	LOG_DEBUG("About to plist_free(response)");
-	// 	plist_free(response);
-	// }
-	// if (data) {
-	// 	LOG_DEBUG("free(data):%p", data);
-	// 	free(data);
-	// }
+	if (response) {
+		LOG_DEBUG("About to plist_free(response)");
+		plist_free(response);
+	}
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
+	}
 	return AIRPLAY_SEQ_CONTINUE;
 
 	error:
@@ -1737,6 +1934,121 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 		free(data);
 	}
 	p->state = AIRPLAY_STATE_FAILED;
+	return AIRPLAY_SEQ_ABORT;
+}
+
+
+static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p)
+{
+	plist_t response = NULL;
+	plist_t streams = NULL;
+	plist_t stream = NULL;
+	plist_t item = NULL;
+	uint64_t uintval = 0;
+	char *data = NULL;
+
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_WARN("Unexpected reply (%d %s) to SETUP (stream) from %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description, p->name);
+		goto error;
+	}
+	else if (p->rtsp_response.length <= 0) {
+		LOG_ERROR("No RTSP Response data");
+		goto error;
+	}
+	else if (!strncmp(p->rtsp_response.content_type, 
+			AIRPLAY_CONTENT_TYPE_PLIST, 
+			strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
+		LOG_ERROR("Invalid content type in RTSP Response. Expected %s, but got %s",
+			AIRPLAY_CONTENT_TYPE_PLIST, p->rtsp_response.content_type);
+		goto error;
+	}
+
+	if (!(data = malloc(p->rtsp_response.length))) {
+		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
+		goto error;
+	}
+	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
+
+	LOG_INFO("Setting up AirPlay session %u (X -> Y)\n", p->session_uuid);
+	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
+	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
+
+	streams = plist_dict_get_item(response, "streams");
+	if (!streams)
+	{
+		LOG_ERROR("Could not find streams item in response from '%s'\n", p->name);
+		goto error;
+	}
+
+	stream = plist_array_get_item(streams, 0);
+	if (!stream)
+	{
+		LOG_ERROR("Could not find stream item in response from '%s'\n", p->name);
+		goto error;
+	}
+
+	item = plist_dict_get_item(stream, "dataPort");
+	if (item)
+	{
+		plist_get_uint_val(item, &uintval);
+		// rs->data_port = uintval;
+		p->rtp_ports.audio.rport = uintval;
+	}
+
+	item = plist_dict_get_item(stream, "controlPort");
+	if (item)
+	{
+		plist_get_uint_val(item, &uintval);
+		p->rtp_ports.ctrl.rport = uintval;
+	}
+
+	if (p->rtp_ports.audio.rport == 0 || p->rtp_ports.ctrl.rport == 0)
+	{
+		LOG_ERROR("Missing port number in reply from '%s' (d=%u, c=%u)\n", 
+			p->name, p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport);
+		goto error;
+	}
+
+	LOG_DEBUG("Negotiated UDP streaming session; ports d=%u c=%u t=%u e=%u\n", 
+		p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport, p->rtp_ports.time.rport, p->rtp_ports.events.rport);
+
+	LOG_WARN("Need to implement network connections for audio and events");
+	// p->rtp_ports.audio.fd = net_connect(p->peer_addr.s_addr, p->rtp_ports.audio.rport, SOCK_DGRAM, "AirPlay data");
+	// if (p->rtp_ports.audio.fd < 0)
+	// {
+	// 	LOG_WARN("Could not connect to data port. %s", strerror(errno));
+	// 	goto error;
+	// }
+
+	// Reverse connection, used to receive playback events from device
+	// ret = airplay_events_listen(rs->devname, rs->address, rs->events_port, rs->shared_secret, rs->shared_secret_len);
+	// if (ret < 0)
+	// {
+	// 	DPRINTF(E_WARN, L_AIRPLAY, "Could not connect to '%s' events port %u, proceeding anyway\n", rs->devname, rs->events_port);
+	// }
+
+	p->state = AIRPLAY_STATE_SETUP;
+
+	if (response) {
+		LOG_DEBUG("plist_free(response):%p", response);
+		plist_free(response);
+	}
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
+	}
+	return AIRPLAY_SEQ_CONTINUE;
+
+error:
+	if (response) {
+		LOG_DEBUG("plist_free(response):%p", response);
+		plist_free(response);
+	}
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
+	}
 	return AIRPLAY_SEQ_ABORT;
 }
 
@@ -1800,6 +2112,7 @@ static void chacha_close(gcry_cipher_hd_t hd)
 	if (!hd)
 	return;
 
+	LOG_DEBUG("Calling gcry_cipher_close(hd):%p", hd);
 	gcry_cipher_close(hd);
 }
 
@@ -1815,6 +2128,7 @@ static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len)
 		goto error;
 	}
 
+	LOG_DEBUG("gcry cipher opened %p", hd);
 	return hd;
 
 error:
@@ -2335,7 +2649,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	}
 
 	airplaycld = malloc(sizeof(airplaycl_data_t));
-	LOG_DEBUG("malloc(airplaycld):%p", airplaycld);
+	LOG_DEBUG("malloc(airplaycld):%d:%p", sizeof(airplaycl_data_t), airplaycld);
 	memset(airplaycld, 0, sizeof(airplaycl_data_t));
 
 	//  airplaycld->sane is set to 0
@@ -2357,8 +2671,10 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	strcpy(airplaycld->DACP_id, DACP_id ? DACP_id : "");
 	strcpy(airplaycld->active_remote, active_remote ? active_remote : "");
 	airplaycld->host_addr = host;
-	airplaycld->rtp_ports.ctrl.fd = airplaycld->rtp_ports.time.fd = airplaycld->rtp_ports.audio.fd = -1;
+	airplaycld->rtp_ports.ctrl.fd = airplaycld->rtp_ports.time.fd = -1 ;
+	airplaycld->rtp_ports.audio.fd = airplaycld->rtp_ports.events.fd = -1;
 	airplaycld->seq_number = rand();
+	airplaycld->session_id = 0;
 
 	if (md && strchr(md, '0')) airplaycld->md_caps |= MD_TEXT;
 	if (md && strchr(md, '1')) airplaycld->md_caps |= MD_ARTWORK;
@@ -2688,9 +3004,24 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	airplay_rtsp_response_clean(p);
 	airplay_session_status_log_info(p);
 
+	// // RTSP SETUP (stream)
+	// if (payload_make_setup_stream(p) == -1) {
+	// 	LOG_ERROR("Error constructing RTSP SETUP (session)");
+	// 	goto erexit;
+	// }
+	// airplay_rtsp_request_log_debug(p);
+	// rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	// airplay_rtsp_response_log_debug(p);
+	// p->next_seq = response_handler_setup_stream(p);
+	// airplay_rtsp_request_clean(p);
+	// airplay_rtsp_response_clean(p);
+	// airplay_session_status_log_info(p);
+
+
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
 	LOG_DEBUG( "[%p]:opened timing socket  l:%5d r:%d", p, p->rtp_ports.time.lport, p->rtp_ports.time.rport );
 	LOG_DEBUG( "[%p]:opened control socket l:%5d r:%d", p, p->rtp_ports.ctrl.lport, p->rtp_ports.ctrl.rport );
+	LOG_DEBUG( "[%p]:opened events socket l:%5d r:%d", p, p->rtp_ports.events.lport, p->rtp_ports.events.rport );
 
 	// if (!rtspcl_record(p->rtspcl, p->seq_number + 1, NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate), kd)) goto erexit;
 
@@ -2758,6 +3089,12 @@ bool _airplaycl_disconnect(struct airplaycl_s *p, bool force)
 	rc = rtspcl_flush(p->rtspcl, p->seq_number + 1, p->head_ts + 1);
 	rc &= rtspcl_disconnect(p->rtspcl);
 	rc &= rtspcl_remove_all_exthds(p->rtspcl);
+
+	pair_setup_free(p->pair_setup_ctx);
+	pair_verify_free(p->pair_verify_ctx);
+	chacha_close(p->packet_cipher_hd);
+	pair_cipher_free(p->control_cipher_ctx);
+
 
 	return rc;
 }
@@ -3065,3 +3402,119 @@ void *_rtp_control_thread(void *args)
 
 	return NULL;
 }
+
+
+/* ---------------------- Request/response sequence control ----------------- */
+
+/*
+ * Request queueing HOWTO
+ *
+ * Sending:
+ * - increment rs->reqs_in_flight
+ * - set evrtsp connection closecb to NULL
+ *
+ * Request callback:
+ * - decrement rs->reqs_in_flight first thing, even if the callback is
+ *   called for error handling (req == NULL or HTTP error code)
+ * - if rs->reqs_in_flight == 0, setup evrtsp connection closecb
+ *
+ * When a request fails, the whole AirPlay session is declared failed and
+ * torn down by calling session_failure(), even if there are requests
+ * queued on the evrtsp connection. There is no reason to think pending
+ * requests would work out better than the one that just failed and recovery
+ * would be tricky to get right.
+ *
+ * evrtsp behaviour with queued requests:
+ * - request callback is called with req == NULL to indicate a connection
+ *   error; if there are several requests queued on the connection, this can
+ *   happen for each request if the connection isn't destroyed
+ * - the connection is reset, and the closecb is called if the connection was
+ *   previously connected. There is no closecb set when there are requests in
+ *   flight
+ */
+
+// static struct airplay_seq_definition airplay_seq_definition[] =
+// {
+//   { AIRPLAY_SEQ_START, NULL, start_retry },
+//   { AIRPLAY_SEQ_START_PLAYBACK, session_connected, start_failure },
+//   { AIRPLAY_SEQ_PROBE, session_success, session_failure },
+//   { AIRPLAY_SEQ_FLUSH, session_status, session_failure },
+//   { AIRPLAY_SEQ_STOP, session_success, session_failure },
+//   { AIRPLAY_SEQ_FAILURE, session_success, session_failure},
+//   { AIRPLAY_SEQ_PIN_START, session_success, session_failure },
+//   { AIRPLAY_SEQ_SEND_VOLUME, session_status, session_failure },
+//   { AIRPLAY_SEQ_SEND_TEXT, NULL, session_failure },
+//   { AIRPLAY_SEQ_SEND_PROGRESS, NULL, session_failure },
+//   { AIRPLAY_SEQ_SEND_ARTWORK, NULL, session_failure },
+//   { AIRPLAY_SEQ_PAIR_SETUP, session_pair_success, session_failure },
+//   { AIRPLAY_SEQ_PAIR_VERIFY, session_pair_success, session_failure },
+//   { AIRPLAY_SEQ_PAIR_TRANSIENT, session_pair_success, session_failure },
+//   { AIRPLAY_SEQ_FEEDBACK, NULL, session_failure },
+// };
+
+// // The size of the second array dimension MUST at least be the size of largest
+// // sequence + 1, because then we can count on a zero terminator when iterating
+// static struct airplay_seq_request airplay_seq_request[][7] =
+// {
+//   {
+//     { AIRPLAY_SEQ_START, "GET /info", EVRTSP_REQ_GET, NULL, response_handler_info_start, NULL, "/info", false },
+//   },
+//   {
+// #if AIRPLAY_USE_AUTH_SETUP
+//     { AIRPLAY_SEQ_START_PLAYBACK, "auth-setup", EVRTSP_REQ_POST, payload_make_auth_setup, NULL, "application/octet-stream", "/auth-setup", true },
+// #endif
+//     // proceed_on_rtsp_not_ok is true because a device may reply with 401 Unauthorized
+//     // and a WWW-Authenticate header, and then we may need re-run with password auth
+//     { AIRPLAY_SEQ_START_PLAYBACK, "SETUP (session)", EVRTSP_REQ_SETUP, payload_make_setup_session, response_handler_setup_session, "application/x-apple-binary-plist", NULL, true },
+//     { AIRPLAY_SEQ_START_PLAYBACK, "SETPEERS", EVRTSP_REQ_SETPEERS, payload_make_setpeers, NULL, "/peer-list-changed", NULL, false },
+//     { AIRPLAY_SEQ_START_PLAYBACK, "SETUP (stream)", EVRTSP_REQ_SETUP, payload_make_setup_stream, response_handler_setup_stream, "application/x-apple-binary-plist", NULL, false },
+//     { AIRPLAY_SEQ_START_PLAYBACK, "RECORD", EVRTSP_REQ_RECORD, payload_make_record, response_handler_record, NULL, NULL, false },
+//     // Some devices (e.g. Sonos Symfonisk) don't register the volume if it isn't last
+//     { AIRPLAY_SEQ_START_PLAYBACK, "SET_PARAMETER (volume)", EVRTSP_REQ_SET_PARAMETER, payload_make_set_volume, response_handler_volume_start, "text/parameters", NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_PROBE, "GET /info (probe)", EVRTSP_REQ_GET, NULL, response_handler_info_probe, NULL, "/info", false },
+//   },
+//   {
+//     { AIRPLAY_SEQ_FLUSH, "FLUSH", EVRTSP_REQ_FLUSH, payload_make_flush, response_handler_flush, NULL, NULL, false },
+//   },
+//   {
+//     { AIRPLAY_SEQ_STOP, "TEARDOWN", EVRTSP_REQ_TEARDOWN, payload_make_teardown, response_handler_teardown, NULL, NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_FAILURE, "TEARDOWN (failure)", EVRTSP_REQ_TEARDOWN, payload_make_teardown, response_handler_teardown_failure, NULL, NULL, false },
+//   },
+//   {
+//     { AIRPLAY_SEQ_PIN_START, "PIN start", EVRTSP_REQ_POST, payload_make_pin_start, response_handler_pin_start, NULL, "/pair-pin-start", false },
+//   },
+//   {
+//     { AIRPLAY_SEQ_SEND_VOLUME, "SET_PARAMETER (volume)", EVRTSP_REQ_SET_PARAMETER, payload_make_set_volume, NULL, "text/parameters", NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_SEND_TEXT, "SET_PARAMETER (text)", EVRTSP_REQ_SET_PARAMETER, payload_make_send_text, NULL, "application/x-dmap-tagged", NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_SEND_PROGRESS, "SET_PARAMETER (progress)", EVRTSP_REQ_SET_PARAMETER, payload_make_send_progress, NULL, "text/parameters", NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_SEND_ARTWORK, "SET_PARAMETER (artwork)", EVRTSP_REQ_SET_PARAMETER, payload_make_send_artwork, NULL, NULL, NULL, true },
+//   },
+//   {
+//     { AIRPLAY_SEQ_PAIR_SETUP, "pair setup 1", EVRTSP_REQ_POST, payload_make_pair_setup1, response_handler_pair_setup1, "application/octet-stream", "/pair-setup", false },
+//     { AIRPLAY_SEQ_PAIR_SETUP, "pair setup 2", EVRTSP_REQ_POST, payload_make_pair_setup2, response_handler_pair_setup2, "application/octet-stream", "/pair-setup", false },
+//     { AIRPLAY_SEQ_PAIR_SETUP, "pair setup 3", EVRTSP_REQ_POST, payload_make_pair_setup3, response_handler_pair_setup3, "application/octet-stream", "/pair-setup", false },
+//   },
+//   {
+//     // Proceed on error is true because we want to delete the device key in the response handler if the verification fails
+//     { AIRPLAY_SEQ_PAIR_VERIFY, "pair verify 1", EVRTSP_REQ_POST, payload_make_pair_verify1, response_handler_pair_verify1, "application/octet-stream", "/pair-verify", true },
+//     { AIRPLAY_SEQ_PAIR_VERIFY, "pair verify 2", EVRTSP_REQ_POST, payload_make_pair_verify2, response_handler_pair_verify2, "application/octet-stream", "/pair-verify", false },
+//   },
+//   {
+//     // Some devices (i.e. my ATV4) gives a 470 when trying transient, so we proceed on that so the handler can trigger PIN setup sequence
+//     { AIRPLAY_SEQ_PAIR_TRANSIENT, "pair setup 1", EVRTSP_REQ_POST, payload_make_pair_setup1, response_handler_pair_setup1, "application/octet-stream", "/pair-setup", true },
+//     { AIRPLAY_SEQ_PAIR_TRANSIENT, "pair setup 2", EVRTSP_REQ_POST, payload_make_pair_setup2, response_handler_pair_setup2, "application/octet-stream", "/pair-setup", false },
+//   },
+//   {
+//     { AIRPLAY_SEQ_FEEDBACK, "POST /feedback", EVRTSP_REQ_POST, NULL, NULL, NULL, "/feedback", true },
+//   },
+// };
