@@ -462,6 +462,7 @@ static const char* airplay_pair_type_str(enum pair_type pair_type);
 
 /* ----------------------- RTSP Helpers --------------------------------*/
 
+// static void airplay_rtsp_request_log_info(struct airplaycl_s *p);
 static void airplay_rtsp_request_log_debug(struct airplaycl_s *p);
 static bool airplay_rtsp_request_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_command_clean(struct airplaycl_s *p);
@@ -474,8 +475,11 @@ static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, con
 static bool airplay_rtsp_body_clean(struct airplaycl_s *p);
 static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_t data_len);
 
+static void airplay_rtsp_response_log_info(struct airplaycl_s *p);
 static void airplay_rtsp_response_log_debug(struct airplaycl_s *p);
 static void airplay_rtsp_response_clean(struct airplaycl_s *p);
+static void airplay_rtsp_response_init(struct airplaycl_s *p);
+static void airplay_rtsp_response_deinit(struct airplaycl_s *p);
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
 static int payload_make_setup_session(struct airplaycl_s *p);
@@ -985,6 +989,27 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	return true;
 }
 
+// LOG_INFO the current state of the RTSP Response
+// @param p the AirPlay 2 Client Handle
+// static void airplay_rtsp_response_log_info(struct airplaycl_s *p){
+// 	if (!p) {
+// 		LOG_ERROR("Invalid AirPlay client handle");
+// 		return;
+// 	}
+// 	if (*loglevel < lINFO) return;
+// 	if (!p->rtsp_response.rtsp_response) {
+// 		LOG_DEBUG("There is no RTSP Response");
+// 		return;
+// 	}
+
+// 	LOG_INFO("RTSP Response %d %s", p->rtsp_response.status_code, p->rtsp_response.description);
+// 	LOG_INFO("Content Type: %s", p->rtsp_response.content_type);
+// 	LOG_INFO("RTSP Body length: %d", p->rtsp_response.length);
+// 	if (p->rtsp_response.length) {
+// 		hexdump("Body\n", (uint8_t *)p->rtsp_response.content, p->rtsp_response.length);
+// 	}
+// }
+
 // LOG_DEBUG the current state of the RTSP Response
 // @param p the AirPlay 2 Client Handle
 static void airplay_rtsp_response_log_debug(struct airplaycl_s *p){
@@ -1017,21 +1042,59 @@ static void airplay_rtsp_response_clean(struct airplaycl_s *p){
 		LOG_DEBUG("There is no RTSP Response");
 		return;
 	}
+	if (p->rtsp_response.length > 0 && !p->rtsp_response.alloced) {
+		LOG_ERROR("Internal data inconsistency. Length: %d, Alloced:%s",
+			p->rtsp_response.length, p->rtsp_response.alloced ? "true" : "false");
+	}
 
 	LOG_DEBUG("Cleaning RTSP Response data");
 	p->rtsp_response.content_type[0] = '\0';
 	p->rtsp_response.description[0] = '\0'; 
 	p->rtsp_response.rtsp_response = false;
 	p->rtsp_response.status_code = 0;
-	if (p->rtsp_response.length > 0) {
+	if (p->rtsp_response.length > 0 ||
+		p->rtsp_response.alloced) {
 		LOG_DEBUG("About to free(p->rtsp_response.content). "
 			"p->rtsp_response.length = %d", 
 			p->rtsp_response.length);
 		free(p->rtsp_response.content);
+		p->rtsp_response.alloced = false;
 	}
 	p->rtsp_response.length = 0;
 	LOG_DEBUG("RTSP Response data cleaned");
 }
+
+// Initialise RTSP Response data. The RTSP Response data structe handle must pre-exist.
+// @param p the AirPlay 2 Client Handle
+static void airplay_rtsp_response_init(struct airplaycl_s *p){
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay client handle");
+		return;
+	}
+	if (!p->rtsp_response.rtsp_response) {
+		LOG_DEBUG("There is no RTSP Response");
+		return;
+	}
+	p->rtsp_response.alloced = false;
+	airplay_rtsp_response_clean(p);
+}
+
+// Deinitialise RTSP Response data. This ensures any alloced memory is freed.
+// This does not destroy the RTSP Response data structure handle.
+// @param p the AirPlay 2 Client Handle
+static void airplay_rtsp_response_deinit(struct airplaycl_s *p){
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay client handle");
+		return;
+	}
+	if (!p->rtsp_response.rtsp_response) {
+		LOG_DEBUG("There is no RTSP Response");
+		return;
+	}
+	airplay_rtsp_response_clean(p);
+}
+
+/*---------------------------------------------------------------------*/
 
 // Callback function for encrypting or decrypting RTSP data
 // @param p the AirPlay 2 Session Client handle
@@ -2683,6 +2746,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	// LOG_DEBUG("rtsp response = %d", airplaycld->rtsp_response.rtsp_response);
 
 	// init RTSP if needed
+	airplay_rtsp_response_init(airplaycld);
 	if (((airplaycld->rtspcl = rtspcl_create(user_agent)) == NULL)) {
 		LOG_ERROR("[%p]: Cannot create RTSP context", airplaycld);
 		free(airplaycld);
@@ -3090,6 +3154,7 @@ bool _airplaycl_disconnect(struct airplaycl_s *p, bool force)
 	rc &= rtspcl_disconnect(p->rtspcl);
 	rc &= rtspcl_remove_all_exthds(p->rtspcl);
 
+	airplay_rtsp_response_deinit(p);
 	pair_setup_free(p->pair_setup_ctx);
 	pair_verify_free(p->pair_verify_ctx);
 	chacha_close(p->packet_cipher_hd);

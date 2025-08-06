@@ -1324,6 +1324,7 @@ static void rtspcl_process_body_response(rtspcl_t *p, char *body, size_t len, rt
 	LOG_DEBUG("malloc(resp->content):%d: %p", len, resp->content);
 	memcpy(resp->content, body, len);
 	resp->length = len;
+	resp->alloced = true;
 
 	return;
 }

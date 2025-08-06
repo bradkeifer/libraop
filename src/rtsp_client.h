@@ -74,6 +74,7 @@ typedef struct rtsp_response_s {
 	char content_type[256];	// Make this an enum?
 	int length;				// Length of the response body
 	char **content;			// Response body. Memory must be freed by the consumer. Allocation only by AirPlay2 handlers
+	bool alloced;			// Flag to indicate if memory has been .alloced for the content. If true, this means it is awaiting to be free'd
 } rtsp_response_t;
 
 struct rtspcl_s *rtspcl_create(char* user_name);
@@ -101,15 +102,6 @@ char* rtspcl_local_ip(struct rtspcl_s *p);
 
 // AirPlay2 versions
 
-// Get information from the AirPlay device using GET /all.
-// The plist obtained with the information is returned in rplist
-// The caller is responsible for calling plist_free when finished with 
-// the plist data
-// @param p pointer to the RTSP client handle
-// @param rplist - if not NULL, the plist will be stored here
-// @param rplen - the length of the returned plist will be stored here. Must be non-NUll if rplist is not NULL.
-// @returns - true on success, false otherwise
-bool rtspcl_get_info(struct rtspcl_s *p, rtsp_response_t *resp);		
 bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_response_t *response);
 
 /**
