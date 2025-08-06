@@ -477,14 +477,23 @@ static void airplay_rtsp_response_log_debug(struct airplaycl_s *p);
 static void airplay_rtsp_response_clean(struct airplaycl_s *p);
 static void airplay_rtsp_response_init(struct airplaycl_s *p);
 static void airplay_rtsp_response_deinit(struct airplaycl_s *p);
+
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
+static int payload_make_get_info(struct airplaycl_s *p);
 static int payload_make_setup_session(struct airplaycl_s *p);
+static int payload_make_setpeers(struct airplaycl_s *p);
+static int payload_make_setup_session(struct airplaycl_s *p);
+static int payload_make_setup_stream(struct airplaycl_s *p);
 
+
+static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
-
-static int payload_make_get_info(struct airplaycl_s *p);
 
 static int payload_make_pin_start(struct airplaycl_s *p);
 static int payload_make_pair_generic(struct airplaycl_s *p, int step);
@@ -492,23 +501,12 @@ static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg);
 static int payload_make_pair_setup2(struct airplaycl_s *p, void* arg);
 // static int payload_make_pair_setup3(struct airplaycl_s *p, void* arg);
 
-static int payload_make_setup_session(struct airplaycl_s *p);
-static int payload_make_setup_stream(struct airplaycl_s *p);
-
-static int payload_make_setpeers(struct airplaycl_s *p);
-
-static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
-static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
-
-
 static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p);
 // static enum airplay_seq_type response_handler_pair_setup3(struct airplaycl_s *p);
 
-static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
-static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
 /*---------------------- Session Ciphering / Encryption Helpers ---------------------*/
 
 static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
@@ -1435,9 +1433,8 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 
 	// wplist_dict_add_uint(stream, "streamConnectionID", rs->session_id); 
 	// Hopefully fine since we have one stream per session
-	LOG_WARN("Need to implement a Session ID into the AirPlay 2 Client Handle");
-	// item = plist_new_uint(p->session_uuid);
-	// plist_dict_set_item(stream, "streamConnectionID", item);
+	item = plist_new_uint(p->session_id);
+	plist_dict_set_item(stream, "streamConnectionID", item);
 
 	streams = plist_new_array();
 	plist_array_append_item(streams, stream);
@@ -1454,12 +1451,15 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 	data = (uint8_t *)out;
 	len = out_len;
 
-
-	plist_free(root);
-
 	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETUP);
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
 	airplay_rtsp_body_add(p, data, len);
+
+	LOG_DEBUG("plist_free root");
+	plist_free(root);
+
+	LOG_DEBUG("free(data):%p", data);
+	free(data);
 
 	return 0;
 
@@ -1468,7 +1468,10 @@ error:
 		LOG_DEBUG("About to plist_free(root)");
 		plist_free(root);
 	}
-	if (*out) free(out);
+	if (data) {
+		LOG_DEBUG("free(data):%p", data);
+		free(data);
+	}
 	return -1;
 }
 
@@ -1488,12 +1491,12 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	LOG_DEBUG("Creating new plist array");
 	root = plist_new_array();
 
-	LOG_DEBUG("AirPlay device address %s, Local address %s", inet_ntoa(p->peer_addr), rtspcl_local_ip(p->rtspcl));
-	add = plist_new_string(inet_ntoa(p->peer_addr));
+	LOG_DEBUG("AirPlay device address %s, Local address %s", inet_ntoa(p->host_addr), inet_ntoa(p->peer_addr));
+	add = plist_new_string(inet_ntoa(p->host_addr));
 	LOG_DEBUG("Appending AirPlay device address to plist");
 	plist_array_append_item(root, add);
 
-	add = plist_new_string(rtspcl_local_ip(p->rtspcl));
+	add = plist_new_string(inet_ntoa(p->peer_addr));
 	LOG_DEBUG("Appending local address to plist");
 	plist_array_append_item(root, add);
 
@@ -1878,13 +1881,24 @@ error:
 // 	return AIRPLAY_SEQ_CONTINUE;
 // }
 
+static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p)
+{
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("SETPEERS error. Response %d: %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description);
+	
+		return AIRPLAY_SEQ_ABORT;
+	}
+
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
 static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p)
 {
 	plist_t response = NULL;
 	plist_t item = NULL;
 	uint64_t uintval = 0;
 	char *data = NULL;
-	// int ret;
 
 	if (p->rtsp_response.status_code == RTSP_UNAUTHORIZED) {
 		if (p->auth){
@@ -1997,7 +2011,9 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	}
 	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 
-	LOG_INFO("Setting up AirPlay session %u (X -> Y)\n", p->session_uuid);
+	LOG_INFO("Setting up AirPlay session %u (%s -> %s)", p->session_id, 
+		inet_ntoa(p->peer_addr), inet_ntoa(p->host_addr));
+
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -2040,7 +2056,7 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	LOG_DEBUG("Negotiated UDP streaming session; ports d=%u c=%u t=%u e=%u\n", 
 		p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport, p->rtp_ports.time.rport, p->rtp_ports.events.rport);
 
-	LOG_WARN("Need to implement network connections for audio and events");
+	LOG_WARN("Need to implement network connections for audio (perhaps is ctrl?) and events");
 	// p->rtp_ports.audio.fd = net_connect(p->peer_addr.s_addr, p->rtp_ports.audio.rport, SOCK_DGRAM, "AirPlay data");
 	// if (p->rtp_ports.audio.fd < 0)
 	// {
@@ -2888,13 +2904,9 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// RTSP connect
 	if (!rtspcl_connect(p->rtspcl, p->host_addr, peer, destport, sid)) goto erexit;
 
-	LOG_INFO("[%p]: local interface %s", p, rtspcl_local_ip(p->rtspcl));
+	LOG_INFO("[%p]: local interface %s", p, inet_ntoa(p->peer_addr));
 
 	// RTSP GET /info
-	// if (!airplay_session_sequence_start(p)) {
-	// 	LOG_ERROR("Unable to start RTSP session with %s", p->name);
-	// 	goto erexit;
-	// }
 	airplay_rtsp_request_clean(p);
 	if (payload_make_get_info(p) == -1) {
 		LOG_ERROR("Unable to start RTSP session with %s", p->name);
@@ -3010,7 +3022,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
 	airplay_session_status_log_info(p);
-
 	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
@@ -3026,24 +3037,33 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 	LOG_DEBUG("SETPEERS processed");
 	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_setpeers(p);
 	LOG_DEBUG("Cleaning request");
 	airplay_rtsp_request_clean(p);
 	LOG_DEBUG("Cleaning response");
 	airplay_rtsp_response_clean(p);
 	airplay_session_status_log_info(p);
+	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
+		LOG_ERROR("Unsupported next sequence.");
+		goto erexit;
+	}
 
 	// // RTSP SETUP (stream)
-	// if (payload_make_setup_stream(p) == -1) {
-	// 	LOG_ERROR("Error constructing RTSP SETUP (session)");
-	// 	goto erexit;
-	// }
-	// airplay_rtsp_request_log_debug(p);
-	// rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	// airplay_rtsp_response_log_debug(p);
-	// p->next_seq = response_handler_setup_stream(p);
-	// airplay_rtsp_request_clean(p);
-	// airplay_rtsp_response_clean(p);
-	// airplay_session_status_log_info(p);
+	if (payload_make_setup_stream(p) == -1) {
+		LOG_ERROR("Error constructing RTSP SETUP (session)");
+		goto erexit;
+	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_setup_stream(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	airplay_session_status_log_info(p);
+	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
+		LOG_ERROR("Unsupported next sequence.");
+		goto erexit;
+	}
 
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
