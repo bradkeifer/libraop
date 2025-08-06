@@ -4,7 +4,7 @@ endif
 
 ifeq ($(findstring gcc,$(CC)),gcc)
 CFLAGS  += -Wno-stringop-truncation -Wno-stringop-overflow -Wno-format-truncation -Wno-multichar
-LDFLAGS += -s -lstdc++
+LDFLAGS += -lstdc++
 else
 CFLAGS += -fno-temp-file
 LDFLAGS += -lc++
@@ -20,7 +20,8 @@ LIB        = lib/$(HOST)/$(PLATFORM)/libraop.a
 EXECUTABLE = $(CORE)-$(PLATFORM)
 
 DEFINES  = -DNDEBUG -D_GNU_SOURCE -DCONFIG_OPENSSL -DDEBUG_PAIR -DAIRPLAY_DUMP_TRAFFIC
-CFLAGS  += -Wall -fPIC -ggdb -O2 $(DEFINES) -fdata-sections -ffunction-sections
+CFLAGS  += -Wall -fPIC -ggdb -Og $(DEFINES) -fdata-sections -ffunction-sections
+
 LDFLAGS += -lpthread -ldl -lm -lplist-2.0 -luuid -lsodium -lgcrypt -L.
 
 TOOLS		= crosstools/src
