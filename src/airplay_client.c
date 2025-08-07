@@ -543,7 +543,7 @@ static int safe_hextou64(const char *str, uint64_t *val)
 	unsigned long long intval;
 
 	if (str == NULL) {
-		LOG_DEBUG("Input to safe_hextou64 is NULL\n");
+		LOG_ERROR("Input to safe_hextou64 is NULL\n");
 		return -1;
 	}
 
@@ -551,17 +551,17 @@ static int safe_hextou64(const char *str, uint64_t *val)
 	intval = strtoull(str, &end, 16);
 
 	if (((errno == ERANGE) && (intval == ULLONG_MAX)) || ((errno != 0) && (intval == 0))) {
-		LOG_DEBUG("Invalid u64 in string (%s): %s\n", str, strerror(errno));
+		LOG_ERROR("Invalid u64 in string (%s): %s\n", str, strerror(errno));
 		return -1;
 	}
 
 	if (end == str) {
-		LOG_DEBUG("No u64 found in string (%s)\n", str);
+		LOG_ERROR("No u64 found in string (%s)\n", str);
 		return -1;
 	}
 
 	if (intval > UINT64_MAX) {
-		LOG_DEBUG("u64 value out of range (%s)\n", str);
+		LOG_ERROR("u64 value out of range (%s)\n", str);
 		return -1;
 	}
 
@@ -666,7 +666,7 @@ static void hexdump(const char *msg, uint8_t *mem, size_t len)
 // Print LOG_INFO output of current state of airplay session
 // @param p the AirPlay 2 client handle
 static void airplay_session_status_log_info(struct airplaycl_s *p) {
-	LOG_DEBUG("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
+	LOG_INFO("Pair type: %s (%d), State: %s (%d), Sequence %s (%d), Status Flags 0x%0x",
 		airplay_pair_type_str(p->pair_type), p->pair_type, 
 		airplay_state_str(p->state), p->state, 
 		airplay_seq_type_str(p->next_seq), p->next_seq, 
@@ -802,13 +802,9 @@ static bool airplay_rtsp_request_clean(struct airplaycl_s *p) {
 		return false;
 	}
 
-	LOG_DEBUG("Command clean");
 	if (!airplay_rtsp_command_clean(p)) return false;
-	LOG_DEBUG("Content Type clean");
 	if (!airplay_rtsp_content_type_clean(p)) return false;
-	LOG_DEBUG("Headers clean");
 	if (!airplay_rtsp_headers_clean(p)) return false;
-	LOG_DEBUG("Body clean");
 	if (!airplay_rtsp_body_clean(p)) return false;
 
 	return true;
@@ -883,9 +879,6 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
 		return true;
 	}
 
-	LOG_DEBUG("About to kd_free(p->rtsp_request.headers.kd). "
-		"p->rtsp_request.headers.count = %d", 
-		p->rtsp_request.headers.count);
 	kd_free(p->rtsp_request.headers.kd);
 	p->rtsp_request.headers.count = 0;
 
@@ -934,11 +927,6 @@ static bool airplay_rtsp_headers_add(struct airplaycl_s *p, const char *key, con
 	}
 	p->rtsp_request.headers.count++;
 
-	LOG_DEBUG("Added %s: %s to key data. Count now is %d",
-		p->rtsp_request.headers.kd[p->rtsp_request.headers.count - 1].key,
-		p->rtsp_request.headers.kd[p->rtsp_request.headers.count - 1].data,
-		p->rtsp_request.headers.count);
-
 	return true;
 }
 
@@ -970,7 +958,6 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 			p->rtsp_request.body.length, data_len, RTSP_MAX_BODY);
 		return false;
 	}
-	LOG_DEBUG("Appending %d bytes to body.mem from index %d", data_len, p->rtsp_request.body.length);
 	memcpy(&p->rtsp_request.body.mem[p->rtsp_request.body.length], data, data_len);
 	p->rtsp_request.body.length += data_len;
 
@@ -1007,7 +994,7 @@ static void airplay_rtsp_response_clean(struct airplaycl_s *p){
 		return;
 	}
 	if (!p->rtsp_response.rtsp_response) {
-		LOG_DEBUG("There is no RTSP Response");
+		LOG_WARN("There is no RTSP Response");
 		return;
 	}
 	if (p->rtsp_response.length > 0 && !p->rtsp_response.alloced) {
@@ -1015,21 +1002,16 @@ static void airplay_rtsp_response_clean(struct airplaycl_s *p){
 			p->rtsp_response.length, p->rtsp_response.alloced ? "true" : "false");
 	}
 
-	LOG_DEBUG("Cleaning RTSP Response data");
 	p->rtsp_response.content_type[0] = '\0';
 	p->rtsp_response.description[0] = '\0'; 
 	p->rtsp_response.rtsp_response = false;
 	p->rtsp_response.status_code = 0;
 	if (p->rtsp_response.length > 0 ||
 		p->rtsp_response.alloced) {
-		LOG_DEBUG("About to free(p->rtsp_response.content). "
-			"p->rtsp_response.length = %d", 
-			p->rtsp_response.length);
 		free(p->rtsp_response.content);
 		p->rtsp_response.alloced = false;
 	}
 	p->rtsp_response.length = 0;
-	LOG_DEBUG("RTSP Response data cleaned");
 }
 
 // Initialise RTSP Response data. The RTSP Response data structe handle must pre-exist.
@@ -1040,7 +1022,7 @@ static void airplay_rtsp_response_init(struct airplaycl_s *p){
 		return;
 	}
 	if (!p->rtsp_response.rtsp_response) {
-		LOG_DEBUG("There is no RTSP Response");
+		LOG_WARN("There is no RTSP Response");
 		return;
 	}
 	p->rtsp_response.alloced = false;
@@ -1056,7 +1038,7 @@ static void airplay_rtsp_response_deinit(struct airplaycl_s *p){
 		return;
 	}
 	if (!p->rtsp_response.rtsp_response) {
-		LOG_DEBUG("There is no RTSP Response");
+		LOG_WARN("There is no RTSP Response");
 		return;
 	}
 	airplay_rtsp_response_clean(p);
@@ -1093,7 +1075,6 @@ static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t
 		}
 	}
 	else {
-		LOG_DEBUG("Decrypting. length %d", buf_in_len);
 		processed = pair_decrypt(&out, &out_len, buf_in, buf_in_len, p->control_cipher_ctx);
 		if (processed < 0) {
 			goto error;
@@ -1163,7 +1144,6 @@ static int payload_make_setup_session(struct airplaycl_s *p)
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
 	airplay_rtsp_body_add(p, data, len);
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 
@@ -1245,12 +1225,8 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 		return -1;
 	}
 
-	// LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
-	// if (*loglevel >= lDEBUG) hexdump("Output buffer\n", body, len);
-	// LOG_DEBUG("errmsg is %s", errmsg);
 	airplay_rtsp_body_add(p, body, len);
 	if (body) {
-		LOG_DEBUG("About to free(body)");
 		free(body);
 	}
 
@@ -1372,7 +1348,6 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 		return -1;
 	}
 
-	LOG_DEBUG("Creating new plist dict");
 	stream = plist_new_dict();
 
 	// wplist_dict_add_uint(stream, "audioFormat", 262144); 
@@ -1468,21 +1443,17 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
 	airplay_rtsp_body_add(p, data, len);
 
-	LOG_DEBUG("plist_free root");
 	plist_free(root);
 
-	LOG_DEBUG("free(data):%p", data);
 	free(data);
 
 	return 0;
 
 error:
 	if (root) {
-		LOG_DEBUG("About to plist_free(root)");
 		plist_free(root);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return -1;
@@ -1501,18 +1472,14 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	size_t len = 0;
 
 	// TODO also have ipv6
-	LOG_DEBUG("Creating new plist array");
 	root = plist_new_array();
 
 	add = plist_new_string(inet_ntoa(p->peer_addr));
-	LOG_DEBUG("Appending AirPlay device address %s to plist", inet_ntoa(p->host_addr));
 	plist_array_append_item(root, add);
 
 	add = plist_new_string(inet_ntoa(p->host_addr));
-	LOG_DEBUG("Appending local address %s to plist", inet_ntoa(p->peer_addr));
 	plist_array_append_item(root, add);
 
-	LOG_DEBUG("Converting plist to binary");
 	plist_to_bin(root, &out, &out_len);
 	if (!out) {
 		LOG_ERROR("Unable to convert plist to binary");
@@ -1522,7 +1489,6 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	len = out_len;
 
 	if (root) {
-		LOG_DEBUG("plist_free root");
 		plist_free(root);
 	}
 
@@ -1530,18 +1496,15 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_SETPEERS);
 	airplay_rtsp_body_add(p, data, len);
 
-	LOG_DEBUG("free(data):%p", data);
 	free(data);
 
 	return 0;
 
 error:
 	if (root) {
-		LOG_DEBUG("About to plist_free(root)");
 		plist_free(root);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return -1;
@@ -1566,7 +1529,6 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
-	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -1621,9 +1583,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		goto error;
 	}
 
-	LOG_DEBUG("Getting dict item %s", AIRPLAY_PLIST_STATUS_FLAGS);
 	item = plist_dict_get_item(response, "statusFlags");
-	LOG_DEBUG("Got item");
 	if (item) {
 		plist_get_uint_val(item, &p->status_flags);
 	}
@@ -1681,22 +1641,18 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	}
 
 	if (response) {
-		LOG_DEBUG("About to plist_free(response)");
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return seq;;
 
 error:
 	if (response) {
-		LOG_DEBUG("About to plist_free(response)");
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("About to free(data)");
 		free(data);
 	}
 	p->state = AIRPLAY_STATE_FAILED;
@@ -1952,7 +1908,6 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
-	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 	memcpy(data, p->rtsp_response.content, p->rtsp_response.length);
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
@@ -1979,22 +1934,18 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 	}
 
 	if (response) {
-		LOG_DEBUG("About to plist_free(response)");
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return AIRPLAY_SEQ_CONTINUE;
 
 	error:
 	if (response) {
-		LOG_DEBUG("About to plist_free(response)");
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("About to free(data)");
 		free(data);
 	}
 	p->state = AIRPLAY_STATE_FAILED;
@@ -2032,7 +1983,6 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 		LOG_ERROR("Unable to malloc %d bytes. %s", p->rtsp_response.length, strerror(errno));
 		goto error;
 	}
-	LOG_DEBUG("malloc(data):%d:%p", p->rtsp_response.length, data);
 
 	LOG_INFO("Setting up AirPlay session %u (%s -> %s)", p->session_id, 
 		inet_ntoa(p->peer_addr), inet_ntoa(p->host_addr));
@@ -2097,22 +2047,18 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	p->state = AIRPLAY_STATE_SETUP;
 
 	if (response) {
-		LOG_DEBUG("plist_free(response):%p", response);
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return AIRPLAY_SEQ_CONTINUE;
 
 error:
 	if (response) {
-		LOG_DEBUG("plist_free(response):%p", response);
 		plist_free(response);
 	}
 	if (data) {
-		LOG_DEBUG("free(data):%p", data);
 		free(data);
 	}
 	return AIRPLAY_SEQ_ABORT;
@@ -2156,8 +2102,6 @@ static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_
 		goto error;
 	}
 
-	LOG_DEBUG("Ciphering setup of '%s' completed succesfully, now using encrypted mode\n", p->name);
-
 	p->state = AIRPLAY_STATE_ENCRYPTED;
 	p->control_cipher_ctx = control_cipher_ctx;
 	p->packet_cipher_hd = packet_cipher_hd;
@@ -2178,7 +2122,6 @@ static void chacha_close(gcry_cipher_hd_t hd)
 	if (!hd)
 	return;
 
-	LOG_DEBUG("Calling gcry_cipher_close(hd):%p", hd);
 	gcry_cipher_close(hd);
 }
 
@@ -2194,7 +2137,6 @@ static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len)
 		goto error;
 	}
 
-	LOG_DEBUG("gcry cipher opened %p", hd);
 	return hd;
 
 error:
@@ -2716,7 +2658,6 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	}
 
 	airplaycld = malloc(sizeof(airplaycl_data_t));
-	LOG_DEBUG("malloc(airplaycld):%d:%p", sizeof(airplaycl_data_t), airplaycld);
 	memset(airplaycld, 0, sizeof(airplaycl_data_t));
 
 	//  airplaycld->sane is set to 0
@@ -2747,8 +2688,6 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	if (md && strchr(md, '0')) airplaycld->md_caps |= MD_TEXT;
 	if (md && strchr(md, '1')) airplaycld->md_caps |= MD_ARTWORK;
 	if (md && strchr(md, '2')) airplaycld->md_caps |= MD_PROGRESS;
-
-	// LOG_DEBUG("rtsp response = %d", airplaycld->rtsp_response.rtsp_response);
 
 	// init RTSP if needed
 	airplay_rtsp_response_init(airplaycld);
@@ -3013,7 +2952,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 
 			// Now handle the response and free the response memory
-			LOG_DEBUG("Handling RTSP Response for pair-setup step 2");
 			p->next_seq = response_handler_pair_setup2(p);
 			airplay_rtsp_request_clean(p);
 			airplay_rtsp_response_clean(p);
@@ -3081,14 +3019,10 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		goto erexit;
 	}
 	airplay_rtsp_request_log_debug(p);
-	LOG_DEBUG("About to process RTSP Request for SETPEERS");
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	LOG_DEBUG("SETPEERS processed");
 	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_setpeers(p);
-	LOG_DEBUG("Cleaning request");
 	airplay_rtsp_request_clean(p);
-	LOG_DEBUG("Cleaning response");
 	airplay_rtsp_response_clean(p);
 	airplay_session_status_log_info(p);
 	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
@@ -3147,18 +3081,14 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// }
 
 	if (sac) {
-		LOG_DEBUG("free(sac):%p", sac);
 		free(sac);
 	}
-	LOG_DEBUG("Returning true");
 	return true;
 
  erexit:
 	if (sac) {
-		LOG_DEBUG("About to free(sac)");
 		free(sac);
 	}
-	LOG_DEBUG("About to kd_free(kd)");
 	kd_free(kd);
 	_airplaycl_disconnect(p, true);
 
@@ -3218,7 +3148,6 @@ bool airplaycl_destroy(struct airplaycl_s *p)
 
 	if (p->alac_codec) alac_delete_encoder(p->alac_codec);
 
-	LOG_DEBUG("free(p):%p", p);
 	free(p);
 
 	return rc;
@@ -3324,6 +3253,7 @@ void *_rtp_timing_thread(void *args)
 	addr.sin_addr = airplaycld->peer_addr;
 	addr.sin_port = htons(airplaycld->rtp_ports.time.rport);
 
+	LOG_DEBUG("RTP Timing Thread started");
 	while (airplaycld->time_running)
 	{
 		rtp_time_pkt_t req;
@@ -3352,6 +3282,7 @@ void *_rtp_timing_thread(void *args)
 			addr.sin_port = client.sin_port;
 			LOG_DEBUG("[%p]: NTP remote port: %d", airplaycld, ntohs(addr.sin_port));
 		}
+		LOG_DEBUG("RTP Timing. Read %u bytes", n);
 
 		if( n > 0) 	{
 			rtp_time_pkt_t rsp;
