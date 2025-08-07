@@ -974,7 +974,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		memcpy(buf_plaintext + len, content, length);
 	}
 
-#ifdef AIRPLAY_DUMP_TRAFFIC
+#if AIRPLAY_DUMP_TRAFFIC
 	hexdump("RTSP Request - Plaintext\n", buf_plaintext, len_plaintext);
 #endif
 	if (rtspcld->cipher_enabled) {
@@ -997,7 +997,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		len_raw = len_plaintext;
 	}
 	LOG_DEBUG("Sending %zu bytes of %s data", len_raw, rtspcld->cipher_enabled ? "encrypted" : "plain text");
-#ifdef AIRPLAY_DUMP_TRAFFIC
+#if AIRPLAY_DUMP_TRAFFIC
 	hexdump("RTSP Request - Raw\n", buf_raw, len_raw);
 #endif
 	rval = send(rtspcld->fd, buf_raw, len_raw, 0);
@@ -1052,7 +1052,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		goto erexit;
 	}
 
-#ifdef AIRPLAY_DUMP_TRAFFIC
+#if AIRPLAY_DUMP_TRAFFIC
 	hexdump("RTSP Response\n", buf_raw, len_raw);
 #endif
 

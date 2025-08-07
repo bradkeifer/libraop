@@ -123,7 +123,7 @@ static int print_usage(char *argv[])
 		   "\t[-am <value>] (am in mDNS: modelname)\n"
 		   "\t[-pk <value>] (pk in mDNS: pairing key info)\n"
 		   "\t[-pw <value>] (pw in mDNS: password info)\n"
-		   "\t[-device_id <value>] (device id in Airplay mDNS. Only relevant for AirPlay2 clients)\n"
+		   "\t[-client_name <string>] (eg My Music on Music Assistant. Only relevant for AirPlay2 clients)\n"
 
 		   "\t[-secret <secret>] (valid secret for AppleTV)\n"
 		   "\t[-password <password>] (device password)\n"
@@ -339,6 +339,7 @@ int main(int argc, char *argv[])
 	uint32_t glNetmask;
 	char glInterface[16] = "?";
 	static struct in_addr glHost;
+	char *client_name = NULL;
 
 	// parse arguments
 	for (i = 1; i < argc; i++)
@@ -409,6 +410,10 @@ int main(int argc, char *argv[])
 		else if (!strcmp(argv[i], "-pw"))
 		{
 			pw = argv[++i];
+		}
+		else if (!strcmp(argv[i], "-client_name"))
+		{
+			client_name = argv[++i];
 		}
 		else if (!strcmp(argv[i], "-et"))
 		{
@@ -654,7 +659,8 @@ int main(int argc, char *argv[])
 										DEFAULT_FRAMES_PER_CHUNK,
 										latency, crypto, auth, secret, password, et, md,
 										44100, 16, 2,
-										volume > 0 ? raopcl_float_volume(volume) : -144.0)) == NULL)
+										volume > 0 ? raopcl_float_volume(volume) : -144.0,
+										client_name ? client_name : "Default AirPlay 2 Client Name")) == NULL)
 			{
 				LOG_ERROR("Cannot init AirPlay %p", airplaycl);
 				close_platform();

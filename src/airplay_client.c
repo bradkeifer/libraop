@@ -67,14 +67,19 @@
 
 // AirPlay 2 RTSP Commands
 #define AIRPLAY_COMMAND_GET_INFO					"GET /info"
-#define AIRPLAY_COMMAND_SETPEERS					"SETPEERS /peer-list-changed"
+#define AIRPLAY_COMMAND_SETPEERS					"SETPEERS"
 #define AIRPLAY_COMMAND_SETUP						"SETUP"
+
+// AirPlay 2 RTSP Headers
+#define AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR			"X-Apple-HKP"
+#define AIRPLAY_RTSP_HEADER_CLIENT_NAME				"X-Apple-Client-Name"
 
 // Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
 #define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
 
 // from owntones
+#define AIRPLAY_DUMP_TRAFFIC	0
 
 #define AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT     44100
 #define AIRPLAY_QUALITY_BITS_PER_SAMPLE_DEFAULT 16
@@ -421,6 +426,7 @@ typedef struct airplaycl_s {
 	uint64_t status_flags;	// Added for AirPlay2
 	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
 	char name[AIRPLAY_NAME_SIZE + 1]; // Added for AirPlay2
+	char *client_name;	// Added for AirPlay2 - pass this as an argument into cliraop
 	uint64_t features; // Added for AirPlay2
 	enum airplay_state state; // Added for AirPlay2 - see if can homogenise with/replace raop_state
 	rtsp_response_t rtsp_response;	// Added for AirPlay2
@@ -968,7 +974,7 @@ static bool airplay_rtsp_body_add(struct airplaycl_s *p, const void *data, size_
 	memcpy(&p->rtsp_request.body.mem[p->rtsp_request.body.length], data, data_len);
 	p->rtsp_request.body.length += data_len;
 
-	if (*loglevel >= lDEBUG) hexdump("Body\n", (uint8_t *)p->rtsp_request.body.mem, p->rtsp_request.body.length);
+	// if (*loglevel >= lDEBUG) hexdump("Body\n", (uint8_t *)p->rtsp_request.body.mem, p->rtsp_request.body.length);
 	return true;
 }
 
@@ -1066,24 +1072,18 @@ static void airplay_rtsp_response_deinit(struct airplaycl_s *p){
 // @note this needs to move back into airplay.c to remain aligned with owntones derived design
 static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt)
 {
-	uint8_t *in;
-	size_t in_len;
 	uint8_t *out = NULL;
 	size_t out_len = 0;
 	ssize_t processed;
 	struct airplaycl_s *p = (struct airplaycl_s *)vp;
 
-
-	in = buf_in;
-	in_len = buf_in_len;
-
 	if (encrypt) {
 #if AIRPLAY_DUMP_TRAFFIC
-		if (in_len < 4096) {
-			hexdump("Encrypting outgoing request\n", in, in_len);
+		if (buf_in_len < 4096) {
+			hexdump("Encrypting outgoing request\n", buf_in, buf_in_len);
 		}
 		else {
-			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", in_len);
+			LOG_DEBUG("Encrypting outgoing request (size %zu)\n", buf_in_len);
 		}
 #endif
 
@@ -1111,7 +1111,7 @@ static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t
 
 	*buf_out = out;
 	*buf_out_len = out_len;
-	LOG_DEBUG("%s: In:%zu, Out:%zu:%zu", encrypt ? "Encrypted" : "Decrypted", in_len, out_len, *buf_out_len);
+	LOG_DEBUG("%s: In:%zu, Out:%zu:%zu", encrypt ? "Encrypted" : "Decrypted", buf_in_len, out_len, *buf_out_len);
 
 	return 0;
 
@@ -1193,9 +1193,9 @@ static int payload_make_pin_start(struct airplaycl_s *p)
 
 	airplay_rtsp_command_add(p, PAIR_AP_POST_PIN_START);
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-		airplay_rtsp_headers_add(p, "X-Apple-HKP", "3");
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
 	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-		airplay_rtsp_headers_add(p, "X-Apple-HKP", "4");
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
 
 	return 0;
 }
@@ -1245,9 +1245,9 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 		return -1;
 	}
 
-	LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
-	if (*loglevel >= lDEBUG) hexdump("Output buffer\n", body, len);
-	LOG_DEBUG("errmsg is %s", errmsg);
+	// LOG_DEBUG("Need to add %d bytes to the rtsp output buffer", len);
+	// if (*loglevel >= lDEBUG) hexdump("Output buffer\n", body, len);
+	// LOG_DEBUG("errmsg is %s", errmsg);
 	airplay_rtsp_body_add(p, body, len);
 	if (body) {
 		LOG_DEBUG("About to free(body)");
@@ -1256,9 +1256,9 @@ static int payload_make_pair_generic(struct airplaycl_s *p, int step)
 
 	// Required!!
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-		airplay_rtsp_headers_add(p, "X-Apple-HKP", "3");
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
 	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-		airplay_rtsp_headers_add(p, "X-Apple-HKP", "4");
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
 
 	return 0;
 }
@@ -1377,62 +1377,75 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 
 	// wplist_dict_add_uint(stream, "audioFormat", 262144); 
 	// 0x40000 ALAC/44100/16/2
+	LOG_DEBUG("audioFormat: 262144");
 	item = plist_new_uint(262144);
 	plist_dict_set_item(stream, "audioFormat", item);
 
 
 	// wplist_dict_add_string(stream, "audioMode", "default");
+	LOG_DEBUG("audioMode: default");
 	item = plist_new_string("default");
 	plist_dict_set_item(stream, "audioMode", item);
 
 
 	// wplist_dict_add_uint(stream, "controlPort", rs->control_svc->port);
+	LOG_DEBUG("controlPort: %u", p->rtp_ports.ctrl.lport);
 	item = plist_new_uint(p->rtp_ports.ctrl.lport);
 	plist_dict_set_item(stream, "controlPort", item);
 
 	// wplist_dict_add_uint(stream, "ct", 2); 
 	// Compression type, 1 LPCM, 2 ALAC, 3 AAC, 4 AAC ELD, 32 OPUS
+	LOG_DEBUG("Compression Type: ALAC (ct = 2");
 	item = plist_new_uint(2);
 	plist_dict_set_item(stream, "ct", item);
 
 	// wplist_dict_add_bool(stream, "isMedia", true);
+	LOG_DEBUG("isMedia: true");
 	item = plist_new_bool(true);
 	plist_dict_set_item(stream, "isMedia", item);
 
 	// wplist_dict_add_uint(stream, "latencyMax", 88200); // TODO how do these latencys work?
-	item = plist_new_uint(88200);
+	LOG_DEBUG("latencyMax: %d", AIRPLAY_LATENCY_MAX);
+	item = plist_new_uint(AIRPLAY_LATENCY_MAX);
 	plist_dict_set_item(stream, "latencyMax", item);
 
 	// wplist_dict_add_uint(stream, "latencyMin", 11025);
-	item = plist_new_uint(11025);
+	LOG_DEBUG("latencyMin: %d", AIRPLAY_LATENCY_MIN);
+	item = plist_new_uint(AIRPLAY_LATENCY_MIN);
 	plist_dict_set_item(stream, "latencyMin", item);
 
 	// wplist_dict_add_data(stream, "shk", rs->shared_secret, AIRPLAY_AUDIO_KEY_LEN);
+	LOG_DEBUG("Shared key shk: %s", p->secret);
 	item = plist_new_data((const char *)p->secret, AIRPLAY_AUDIO_KEY_LEN);
 	plist_dict_set_item(stream, "shk", item);
 
 
 	// wplist_dict_add_uint(stream, "spf", AIRPLAY_SAMPLES_PER_PACKET); 
 	// frames per packet
+	LOG_DEBUG("Frames per packet spf: %u", AIRPLAY_SAMPLES_PER_PACKET);
 	item = plist_new_uint(AIRPLAY_SAMPLES_PER_PACKET);
 	plist_dict_set_item(stream, "spf", item);
 
 	// wplist_dict_add_uint(stream, "sr", AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT); 
 	// sample rate
+	LOG_DEBUG("Sample rate sr: %u", AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT);
 	item = plist_new_uint(AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT);
 	plist_dict_set_item(stream, "sr", item);
 
 	// wplist_dict_add_uint(stream, "type", AIRPLAY_RTP_PAYLOADTYPE); 
 	// RTP type, 0x60 = 96 real time, 103 buffered
+	LOG_DEBUG("RTP type type: %u", AIRPLAY_RTP_PAYLOADTYPE);
 	item = plist_new_uint(AIRPLAY_RTP_PAYLOADTYPE);
 	plist_dict_set_item(stream, "type", item);
 
 	// wplist_dict_add_bool(stream, "supportsDynamicStreamID", false);
+	LOG_DEBUG("supportsDynamicStreamID: false");
 	item = plist_new_bool(false);
 	plist_dict_set_item(stream, "supportsDynamicStreamID", item);
 
 	// wplist_dict_add_uint(stream, "streamConnectionID", rs->session_id); 
 	// Hopefully fine since we have one stream per session
+	LOG_DEBUG("streamConnectionID: %u", p->session_id);
 	item = plist_new_uint(p->session_id);
 	plist_dict_set_item(stream, "streamConnectionID", item);
 
@@ -1491,13 +1504,12 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	LOG_DEBUG("Creating new plist array");
 	root = plist_new_array();
 
-	LOG_DEBUG("AirPlay device address %s, Local address %s", inet_ntoa(p->host_addr), inet_ntoa(p->peer_addr));
-	add = plist_new_string(inet_ntoa(p->host_addr));
-	LOG_DEBUG("Appending AirPlay device address to plist");
+	add = plist_new_string(inet_ntoa(p->peer_addr));
+	LOG_DEBUG("Appending AirPlay device address %s to plist", inet_ntoa(p->host_addr));
 	plist_array_append_item(root, add);
 
-	add = plist_new_string(inet_ntoa(p->peer_addr));
-	LOG_DEBUG("Appending local address to plist");
+	add = plist_new_string(inet_ntoa(p->host_addr));
+	LOG_DEBUG("Appending local address %s to plist", inet_ntoa(p->peer_addr));
 	plist_array_append_item(root, add);
 
 	LOG_DEBUG("Converting plist to binary");
@@ -1515,7 +1527,7 @@ static int payload_make_setpeers(struct airplaycl_s *p)
 	}
 
 	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SETPEERS);
-	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_PLIST);
+	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_SETPEERS);
 	airplay_rtsp_body_add(p, data, len);
 
 	LOG_DEBUG("free(data):%p", data);
@@ -1893,6 +1905,12 @@ static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p)
 	return AIRPLAY_SEQ_CONTINUE;
 }
 
+// Handle RTSP Response from SETUP (session) Request
+// We obtain the eventPort and timingPort from the AirPlay 2 device
+// @param p the AirPlay 2 Client Handle
+// @returns the next sequence to action
+// @note the eventPort received is written to p->rtp_ports.events.rport
+// @note the timingPort received is written to p->rtp_ports.time.rport
 static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p)
 {
 	plist_t response = NULL;
@@ -1952,6 +1970,11 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 
 	if (p->rtp_ports.events.rport == 0) {
 		LOG_ERROR("SETUP reply is missing event port\n");
+		goto error;
+	}
+
+	if (p->rtp_ports.time.rport == 0) {
+		LOG_ERROR("SETUP reply is missing timing port\n");
 		goto error;
 	}
 
@@ -2680,7 +2703,8 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 							   airplay_codec_t codec, int chunk_len, int latency_frames,
 							   airplay_crypto_t crypto, bool auth, char *secret, char *passwd,
 							   char *et, char *md,
-							   int sample_rate, int sample_size, int channels, float volume)
+							   int sample_rate, int sample_size, int channels, float volume,
+							   char *client_name)
 {
 	struct airplaycl_s *airplaycld;
 
@@ -2718,6 +2742,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	airplaycld->rtp_ports.audio.fd = airplaycld->rtp_ports.events.fd = -1;
 	airplaycld->seq_number = rand();
 	airplaycld->session_id = 0;
+	airplaycld->client_name = client_name;
 
 	if (md && strchr(md, '0')) airplaycld->md_caps |= MD_TEXT;
 	if (md && strchr(md, '1')) airplaycld->md_caps |= MD_ARTWORK;
@@ -2924,6 +2949,39 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		goto erexit;
 	}
 
+	// Create timing service
+	p->rtp_ports.time.rport = 0;
+	do {
+		p->rtp_ports.time.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
+		p->rtp_ports.time.fd = open_udp_socket(p->host_addr, &p->rtp_ports.time.lport, true);
+	} while (p->rtp_ports.time.fd < 0 && port.count < p->port_range);
+	if (p->rtp_ports.time.fd < 0) goto erexit;
+	// Create the RTP timing thread
+	LOG_INFO("Starting the RTP timing thread");
+	p->time_running = true;
+	if (pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p)) {
+		LOG_ERROR("Error creating the timing thread. %s", strerror(errno));
+		goto erexit;
+	}
+	LOG_DEBUG("Timing thread running");
+
+	// open RTP sockets, need local ports here before sending SETUP
+	// Open Control port
+	p->rtp_ports.ctrl.rport = 0;
+	do {
+		p->rtp_ports.ctrl.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
+		p->rtp_ports.ctrl.fd = open_udp_socket(p->host_addr, &p->rtp_ports.ctrl.lport, true);
+	} while (p->rtp_ports.ctrl.fd < 0 && port.count < p->port_range);
+	if (p->rtp_ports.ctrl.fd < 0) goto erexit;
+
+	// Open Audio port
+	p->rtp_ports.audio.rport = 0;
+	do {
+		p->rtp_ports.audio.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
+		p->rtp_ports.audio.fd = open_udp_socket(p->host_addr, &p->rtp_ports.audio.lport, false);
+	} while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
+	if (p->rtp_ports.audio.fd < 0) goto erexit;
+
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
@@ -2984,32 +3042,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		airplay_session_status_log_info(p);
 	}
 
-	// Create timing service
-	p->rtp_ports.time.rport = 0;
-
-	do {
-		p->rtp_ports.time.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
-		p->rtp_ports.time.fd = open_udp_socket(p->host_addr, &p->rtp_ports.time.lport, true);
-	} while (p->rtp_ports.time.fd < 0 && port.count < p->port_range);
-
-	if (p->rtp_ports.time.fd < 0) goto erexit;
-
-	// open RTP sockets, need local ports here before sending SETUP
-	// Open Control port
-	do {
-		p->rtp_ports.ctrl.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
-		p->rtp_ports.ctrl.fd = open_udp_socket(p->host_addr, &p->rtp_ports.ctrl.lport, true);
-	} while (p->rtp_ports.ctrl.fd < 0 && port.count < p->port_range);
-	if (p->rtp_ports.ctrl.fd < 0) goto erexit;
-
-	// Open Audio port
-	do {
-		p->rtp_ports.audio.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
-		p->rtp_ports.audio.fd = open_udp_socket(p->host_addr, &p->rtp_ports.audio.lport, false);
-	} while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
-
-	if (p->rtp_ports.audio.fd < 0) goto erexit;
-
 	// RTSP SETUP (session)
 	if (payload_make_setup_session(p) == -1) {
 		LOG_ERROR("Error constructing RTSP SETUP (session)");
@@ -3026,6 +3058,22 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
 	}
+
+	// We now have both local and remote ports for the timing service
+	LOG_DEBUG("Timing service ports local:%u, remote:%u", 
+		p->rtp_ports.time.lport, p->rtp_ports.time.rport);
+	if (p->rtp_ports.time.lport == 0 || p->rtp_ports.time.rport == 0) {
+		LOG_ERROR("Local (%u) and/or remote (%u) ports for timing service missing",
+			p->rtp_ports.time.lport, p->rtp_ports.time.rport);
+		goto erexit;
+	}
+
+	LOG_DEBUG("Control service ports local:%u, remote:%u",
+		p->rtp_ports.ctrl.lport, p->rtp_ports.ctrl.rport);
+	LOG_DEBUG("Audio service ports local:%u, remote:%u",
+		p->rtp_ports.audio.lport, p->rtp_ports.audio.rport);
+	LOG_DEBUG("Event service ports local:%u, remote:%u",
+		p->rtp_ports.events.lport, p->rtp_ports.events.rport);
 
 	// RTSP SETPEERS
 	if (payload_make_setpeers(p) == -1) {
@@ -3047,8 +3095,17 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
 	}
+	LOG_DEBUG("Adding Header %s: %s for future dialogue", AIRPLAY_RTSP_HEADER_CLIENT_NAME, p->client_name);
+	rtspcl_add_exthds(p->rtspcl, AIRPLAY_RTSP_HEADER_CLIENT_NAME, p->client_name);
 
-	// // RTSP SETUP (stream)
+
+	// Create the RTP control thread
+	LOG_DEBUG("Create RTP control thread");
+	p->ctrl_running = true;
+	pthread_create(&p->ctrl_thread, NULL, _rtp_control_thread, (void*) p);
+	LOG_INFO("Control thread running");
+
+	// RTSP SETUP (stream)
 	if (payload_make_setup_stream(p) == -1) {
 		LOG_ERROR("Error constructing RTSP SETUP (session)");
 		goto erexit;
@@ -3067,7 +3124,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
-	LOG_DEBUG( "[%p]:opened timing socket  l:%5d r:%d", p, p->rtp_ports.time.lport, p->rtp_ports.time.rport );
 	LOG_DEBUG( "[%p]:opened control socket l:%5d r:%d", p, p->rtp_ports.ctrl.lport, p->rtp_ports.ctrl.rport );
 	LOG_DEBUG( "[%p]:opened events socket l:%5d r:%d", p, p->rtp_ports.events.lport, p->rtp_ports.events.rport );
 
@@ -3079,18 +3135,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	// 	p->latency_frames = max((uint32_t) latency, p->latency_frames);
 	// }
 	// kd_free(kd);
-
-	// Create the RTP timing thread
-	LOG_DEBUG("Create RTP timing thread");
-	p->time_running = true;
-	pthread_create(&p->time_thread, NULL, _rtp_timing_thread, (void*) p);
-	LOG_INFO("Timing thread running");
-
-	// Create the RTP control thread
-	LOG_DEBUG("Create RTP control thread");
-	p->ctrl_running = true;
-	pthread_create(&p->ctrl_thread, NULL, _rtp_control_thread, (void*) p);
-	LOG_INFO("Control thread running");
 
 	pthread_mutex_lock(&p->mutex);
 	// as connect might take time, state might already have been set

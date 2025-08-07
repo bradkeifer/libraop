@@ -25,6 +25,7 @@
 #include "platform.h"
 #include "common.h"
 
+#define AIRPLAY_LATENCY_MAX 88200
 #define AIRPLAY_LATENCY_MIN 11025
 
 typedef struct airplaycl_t {uint32_t dummy;} airplaycl_t;
@@ -52,7 +53,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 							   airplay_codec_t codec, int frame_len, int latency_frames,
 							   airplay_crypto_t crypto, bool auth, char *secret, char *passwd,
 							   char *et, char *md,
-							   int sample_rate, int sample_size, int channels, float volume);
+							   int sample_rate, int sample_size, int channels, float volume, char *client_name);
 bool	airplaycl_destroy(struct airplaycl_s *p);
 bool	airplaycl_connect(struct airplaycl_s *p, struct in_addr host, uint16_t destport, bool set_volume);
 bool 	airplaycl_repair(struct airplaycl_s *p, bool set_volume);
