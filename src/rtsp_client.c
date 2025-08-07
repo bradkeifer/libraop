@@ -37,7 +37,8 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-#define DEFAULT_READ_TIMEOUT 2000	// milliseconds
+#define DEFAULT_READ_TIMEOUT 500	// milliseconds
+#define DEFAULT_READ_RETRIES 5
 
 typedef struct rtspcl_s {
     int fd;
@@ -57,6 +58,7 @@ typedef struct rtspcl_s {
 	int status_code;		// The RTSP status code of the response
 	char description[256];	// The description of the status code
 	int read_timeout;		// ms timeout for reading RTSP Response
+	int read_retries;		// number of times to retry reading with read_timeout timeout
 	bool cipher_enabled;	// true if RTSP encryption/decryption enabled
 	int (*ciphercb)(void *, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 	void *ciphercb_arg;
@@ -146,6 +148,7 @@ bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr hos
 	sprintf(p->url,"rtsp://%s/%s", inet_ntoa(host), sid);
 
 	p->read_timeout = DEFAULT_READ_TIMEOUT;	// todo - make this a configurable variable
+	p->read_retries = DEFAULT_READ_RETRIES; // todo - as per above
 
 	return true;
 }
@@ -1013,11 +1016,17 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLIN;
-	LOG_DEBUG("Starting polled read of RTSP Response, with timeout of %d ms", rtspcld->read_timeout);
-	for (len_raw=0; len_raw < RTSP_MAX_MESSAGE; len_raw++) {
+	LOG_DEBUG("Starting polled read of RTSP Response, with timeout of %d ms, %d retries", 
+		rtspcld->read_timeout, rtspcld->read_retries);
+	int retries = 0;
+	for (len_raw=0; len_raw < RTSP_MAX_MESSAGE; len_raw += rval) {
 		if (poll(&pfds, 1, rtspcld->read_timeout)) {
 			rval = recv(rtspcld->fd, buf_raw + len_raw, 1, 0);
 			if (rval == 0) {
+				if (retries < rtspcld->read_retries) {
+					retries++;
+					continue;
+				}
 				if (len_raw == 0) {
 					LOG_ERROR("No response from AirPlay client");
 					goto erexit;
@@ -1228,10 +1237,8 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 		goto erexit;
 	}
 
-	LOG_DEBUG("About to process header response");
 	rtspcl_process_header_response(p, rkd, response);
 	if (rkd->key[0]) kd_free(rkd);
-	LOG_DEBUG("About to process body respose. Body length is %d. Address is %p", resp_len, resp_content);
 	rtspcl_process_body_response(p, resp_content, resp_len, response);
 	if (resp_content) {
 		free(resp_content);
