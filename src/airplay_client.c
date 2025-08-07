@@ -421,7 +421,7 @@ typedef struct airplaycl_s {
 	uint16_t port_base, port_range;
 	char passwd[64];
 
-	uint32_t	session_id;	// Added for AirPlay2
+	uint32_t session_id;	// Added for AirPlay2
 	char session_uuid[37];	// Added for AirPlay2
 	uint64_t status_flags;	// Added for AirPlay2
 	char device_id[AIRPLAY_DEVICE_ID_SIZE + 1]; // Added for AirPlay2
@@ -1350,77 +1350,48 @@ static int payload_make_setup_stream(struct airplaycl_s *p)
 
 	stream = plist_new_dict();
 
-	// wplist_dict_add_uint(stream, "audioFormat", 262144); 
 	// 0x40000 ALAC/44100/16/2
-	LOG_DEBUG("audioFormat: 262144");
 	item = plist_new_uint(262144);
 	plist_dict_set_item(stream, "audioFormat", item);
 
-
-	// wplist_dict_add_string(stream, "audioMode", "default");
-	LOG_DEBUG("audioMode: default");
 	item = plist_new_string("default");
 	plist_dict_set_item(stream, "audioMode", item);
 
-
-	// wplist_dict_add_uint(stream, "controlPort", rs->control_svc->port);
 	LOG_DEBUG("controlPort: %u", p->rtp_ports.ctrl.lport);
 	item = plist_new_uint(p->rtp_ports.ctrl.lport);
 	plist_dict_set_item(stream, "controlPort", item);
 
-	// wplist_dict_add_uint(stream, "ct", 2); 
 	// Compression type, 1 LPCM, 2 ALAC, 3 AAC, 4 AAC ELD, 32 OPUS
-	LOG_DEBUG("Compression Type: ALAC (ct = 2");
 	item = plist_new_uint(2);
 	plist_dict_set_item(stream, "ct", item);
 
-	// wplist_dict_add_bool(stream, "isMedia", true);
-	LOG_DEBUG("isMedia: true");
 	item = plist_new_bool(true);
 	plist_dict_set_item(stream, "isMedia", item);
 
-	// wplist_dict_add_uint(stream, "latencyMax", 88200); // TODO how do these latencys work?
-	LOG_DEBUG("latencyMax: %d", AIRPLAY_LATENCY_MAX);
 	item = plist_new_uint(AIRPLAY_LATENCY_MAX);
 	plist_dict_set_item(stream, "latencyMax", item);
 
-	// wplist_dict_add_uint(stream, "latencyMin", 11025);
-	LOG_DEBUG("latencyMin: %d", AIRPLAY_LATENCY_MIN);
 	item = plist_new_uint(AIRPLAY_LATENCY_MIN);
 	plist_dict_set_item(stream, "latencyMin", item);
 
-	// wplist_dict_add_data(stream, "shk", rs->shared_secret, AIRPLAY_AUDIO_KEY_LEN);
-	LOG_DEBUG("Shared key shk: %s", p->secret);
-	item = plist_new_data((const char *)p->secret, AIRPLAY_AUDIO_KEY_LEN);
+	item = plist_new_data((const char *)p->shared_secret, AIRPLAY_AUDIO_KEY_LEN);
 	plist_dict_set_item(stream, "shk", item);
 
-
-	// wplist_dict_add_uint(stream, "spf", AIRPLAY_SAMPLES_PER_PACKET); 
 	// frames per packet
-	LOG_DEBUG("Frames per packet spf: %u", AIRPLAY_SAMPLES_PER_PACKET);
 	item = plist_new_uint(AIRPLAY_SAMPLES_PER_PACKET);
 	plist_dict_set_item(stream, "spf", item);
 
-	// wplist_dict_add_uint(stream, "sr", AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT); 
 	// sample rate
-	LOG_DEBUG("Sample rate sr: %u", AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT);
 	item = plist_new_uint(AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT);
 	plist_dict_set_item(stream, "sr", item);
 
-	// wplist_dict_add_uint(stream, "type", AIRPLAY_RTP_PAYLOADTYPE); 
 	// RTP type, 0x60 = 96 real time, 103 buffered
-	LOG_DEBUG("RTP type type: %u", AIRPLAY_RTP_PAYLOADTYPE);
 	item = plist_new_uint(AIRPLAY_RTP_PAYLOADTYPE);
 	plist_dict_set_item(stream, "type", item);
 
-	// wplist_dict_add_bool(stream, "supportsDynamicStreamID", false);
-	LOG_DEBUG("supportsDynamicStreamID: false");
 	item = plist_new_bool(false);
 	plist_dict_set_item(stream, "supportsDynamicStreamID", item);
 
-	// wplist_dict_add_uint(stream, "streamConnectionID", rs->session_id); 
-	// Hopefully fine since we have one stream per session
-	LOG_DEBUG("streamConnectionID: %u", p->session_id);
 	item = plist_new_uint(p->session_id);
 	plist_dict_set_item(stream, "streamConnectionID", item);
 
@@ -1991,31 +1962,29 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	plist_from_bin(data, (uint32_t)p->rtsp_response.length, &response);
 
 	streams = plist_dict_get_item(response, "streams");
-	if (!streams)
-	{
+	if (!streams) {
 		LOG_ERROR("Could not find streams item in response from '%s'\n", p->name);
 		goto error;
 	}
 
 	stream = plist_array_get_item(streams, 0);
-	if (!stream)
-	{
+	if (!stream) {
 		LOG_ERROR("Could not find stream item in response from '%s'\n", p->name);
 		goto error;
 	}
 
 	item = plist_dict_get_item(stream, "dataPort");
-	if (item)
-	{
+	if (item) {
 		plist_get_uint_val(item, &uintval);
 		// rs->data_port = uintval;
+		LOG_DEBUG("dataPort:%d", uintval);
 		p->rtp_ports.audio.rport = uintval;
 	}
 
 	item = plist_dict_get_item(stream, "controlPort");
-	if (item)
-	{
+	if (item) {
 		plist_get_uint_val(item, &uintval);
+		LOG_DEBUG("controlPort:%d", uintval);
 		p->rtp_ports.ctrl.rport = uintval;
 	}
 
@@ -2026,7 +1995,7 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 		goto error;
 	}
 
-	LOG_DEBUG("Negotiated UDP streaming session; ports d=%u c=%u t=%u e=%u\n", 
+	LOG_DEBUG("Negotiated UDP streaming session; ports audio=%u control=%u timing=%u events=%u\n", 
 		p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport, p->rtp_ports.time.rport, p->rtp_ports.events.rport);
 
 	LOG_WARN("Need to implement network connections for audio (perhaps is ctrl?) and events");
@@ -2662,6 +2631,8 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 
 	//  airplaycld->sane is set to 0
 	uuid_make(airplaycld->session_uuid);
+	gcry_randomize(&airplaycld->session_id, sizeof(airplaycld->session_id), GCRY_STRONG_RANDOM);
+	LOG_DEBUG("Session id is %u", airplaycld->session_id);
 	airplaycld->port_base = port_base;
 	airplaycld->port_range = port_base ? port_range : 1;
 	airplaycld->sample_rate = sample_rate;
@@ -2682,7 +2653,6 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	airplaycld->rtp_ports.ctrl.fd = airplaycld->rtp_ports.time.fd = -1 ;
 	airplaycld->rtp_ports.audio.fd = airplaycld->rtp_ports.events.fd = -1;
 	airplaycld->seq_number = rand();
-	airplaycld->session_id = 0;
 	airplaycld->client_name = client_name;
 
 	if (md && strchr(md, '0')) airplaycld->md_caps |= MD_TEXT;
@@ -2857,7 +2827,8 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 
 	RAND_bytes((uint8_t*) &seed, sizeof(seed));
 	VALGRIND_MAKE_MEM_DEFINED(&seed, sizeof(seed));
-	sprintf(sid, "%010lu", (long unsigned int) seed.sid);
+	// sprintf(sid, "%010lu", (long unsigned int) seed.sid);
+	sprintf(sid, "%010lu", (long unsigned int) p->session_id);
 	sprintf(sci, "%016llx", (long long int) seed.sci);
 
 	// RTSP misc setup
@@ -3282,7 +3253,6 @@ void *_rtp_timing_thread(void *args)
 			addr.sin_port = client.sin_port;
 			LOG_DEBUG("[%p]: NTP remote port: %d", airplaycld, ntohs(addr.sin_port));
 		}
-		LOG_DEBUG("RTP Timing. Read %u bytes", n);
 
 		if( n > 0) 	{
 			rtp_time_pkt_t rsp;

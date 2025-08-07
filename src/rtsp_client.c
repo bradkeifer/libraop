@@ -37,7 +37,7 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-#define DEFAULT_READ_TIMEOUT 500	// milliseconds
+#define DEFAULT_READ_TIMEOUT 2000	// milliseconds
 
 typedef struct rtspcl_s {
     int fd;
