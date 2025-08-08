@@ -69,17 +69,20 @@
 #define AIRPLAY_COMMAND_GET_INFO					"GET /info"
 #define AIRPLAY_COMMAND_SETPEERS					"SETPEERS"
 #define AIRPLAY_COMMAND_SETUP						"SETUP"
+#define AIRPLAY_COMMAND_RECORD						"RECORD"
 
 // AirPlay 2 RTSP Headers
 #define AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR			"X-Apple-HKP"
 #define AIRPLAY_RTSP_HEADER_CLIENT_NAME				"X-Apple-Client-Name"
+#define AIRPLAY_RTSP_HEADER_PROTOCOL_VERISON		"X-Apple-ProtocolVersion"
+#define AIRPLAY_RTSP_HEADER_RANGE					"Range"
 
 // Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
 #define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
 
 // from owntones
-#define AIRPLAY_DUMP_TRAFFIC	0
+#define AIRPLAY_DUMP_TRAFFIC	1
 
 #define AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT     44100
 #define AIRPLAY_QUALITY_BITS_PER_SAMPLE_DEFAULT 16
@@ -487,10 +490,10 @@ static void airplay_rtsp_response_deinit(struct airplaycl_s *p);
 /*------------------------ Other Sequencing Helpers ------------------------*/
 
 static int payload_make_get_info(struct airplaycl_s *p);
-static int payload_make_setup_session(struct airplaycl_s *p);
 static int payload_make_setpeers(struct airplaycl_s *p);
 static int payload_make_setup_session(struct airplaycl_s *p);
 static int payload_make_setup_stream(struct airplaycl_s *p);
+static int payload_make_record(struct airplaycl_s *p);
 
 
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
@@ -498,6 +501,7 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_record(struct airplaycl_s *p);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -1104,6 +1108,31 @@ error:
 }
 
 /*--------------------- Other Sequencing Helpers - logic sourced from owntones ---------------------------*/
+
+static int payload_make_record(struct airplaycl_s *p)
+{
+	char buf[64];
+	int ret;
+
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_RECORD);
+	airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_PROTOCOL_VERISON, "1");
+	airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_RANGE, "npt=0-");
+
+	// Start sequence: next sequence
+	// ret = snprintf(buf, sizeof(buf), "seq=%" PRIu16 ";rtptime=%u", rms->rtp_session->seqnum, rms->rtp_session->pos);
+	ret = snprintf(buf, sizeof(buf), "seq=%" PRIu16 ";rtptime=%" PRIu64, 
+		p->seq_number + 1, NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate));
+	if ((ret < 0) || (ret >= sizeof(buf))) {
+		LOG_ERROR("RTP-Info too big for buffer in RECORD request\n");
+		return -1;
+	}
+	LOG_DEBUG("RTP-Info: %s", buf);
+	airplay_rtsp_headers_add(p, "RTP-Info", buf);
+
+	LOG_DEBUG("RTP-Info is %s\n", buf);
+
+	return 0;
+}
 
 
 static int payload_make_setup_session(struct airplaycl_s *p)
@@ -1924,6 +1953,20 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 }
 
 
+static enum airplay_seq_type response_handler_record(struct airplaycl_s *p)
+{
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("SETPEERS error. Response %d: %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description);
+	
+		return AIRPLAY_SEQ_ABORT;
+	}
+
+	p->state = AIRPLAY_STATE_RECORD;
+
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
 static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p)
 {
 	plist_t response = NULL;
@@ -2633,6 +2676,7 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	uuid_make(airplaycld->session_uuid);
 	gcry_randomize(&airplaycld->session_id, sizeof(airplaycld->session_id), GCRY_STRONG_RANDOM);
 	LOG_DEBUG("Session id is %u", airplaycld->session_id);
+	airplaycld->raop_state = AIRPLAY_DOWN;	// explicitly initialise, even though we memset to 0
 	airplaycld->port_base = port_base;
 	airplaycld->port_range = port_base ? port_range : 1;
 	airplaycld->sample_rate = sample_rate;
@@ -3027,6 +3071,23 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		goto erexit;
 	}
 
+	// RTSP RECORD
+	if (payload_make_record(p) == -1) {
+		LOG_ERROR("Error constructing RTSP RECORD");
+		goto erexit;
+	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_record(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	airplay_session_status_log_info(p);
+	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
+		LOG_ERROR("Unsupported next sequence.");
+		goto erexit;
+	}
+
 
 	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
 	LOG_DEBUG( "[%p]:opened control socket l:%5d r:%d", p, p->rtp_ports.ctrl.lport, p->rtp_ports.ctrl.rport );
@@ -3046,6 +3107,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	if (p->raop_state == AIRPLAY_DOWN) p->raop_state = AIRPLAY_FLUSHED;
 	pthread_mutex_unlock(&p->mutex);
 
+	LOG_INFO("Implement volume setting exchange");
 	// if (set_volume) {
 	// 	LOG_INFO("[%p]: setting volume as part of connect %.2f", p, p->volume);
 	// 	airplaycl_set_volume(p, p->volume);

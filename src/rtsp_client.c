@@ -37,7 +37,7 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-#define DEFAULT_READ_TIMEOUT 1500	// milliseconds
+#define DEFAULT_READ_TIMEOUT 3000	// milliseconds
 
 typedef struct rtspcl_s {
     int fd;
@@ -913,7 +913,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		strcat((char *)buf_plaintext, buf);
 	}
 
-	if (content_type && content) {
+	if (*content_type && content && length) {
 		sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length);
 		strcat((char *)buf_plaintext, buf);
 	}
