@@ -32,6 +32,9 @@
 #include <plist/plist.h>	// Required for AirPlay2 message handling
 #include <uuid/uuid.h>
 #include <gcrypt.h>
+#include <event2/event.h>
+#include <event2/thread.h>
+#include <pthread.h>
 
 #include "alac_wrapper.h"
 #include "cross_net.h"
@@ -42,6 +45,7 @@
 #include "airplay_client.h"
 #include "aes.h"
 #include "pair.h"
+#include "airplay_events.h"
 
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
@@ -410,9 +414,9 @@ typedef struct airplaycl_s {
 	unsigned long ssrc;
 	uint32_t latency_frames;
 	int chunk_len;
-	pthread_t time_thread, ctrl_thread;
+	pthread_t time_thread, ctrl_thread, events_thread;
 	pthread_mutex_t mutex;
-	bool time_running, ctrl_running;
+	bool time_running, ctrl_running, events_running;
 	int sample_rate, sample_size, channels;
 	airplay_codec_t codec;
 	struct alac_codec_s *alac_codec;
@@ -528,6 +532,7 @@ static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
 
 /*----------------------- ? ---------------------------------*/
 
+static void *_airplaycl_events_thread(void *args);
 static void *_rtp_timing_thread(void *args);
 static void *_rtp_control_thread(void *args);
 static void _airplaycl_terminate_rtp(struct airplaycl_s *p);
@@ -2041,7 +2046,7 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	LOG_DEBUG("Negotiated UDP streaming session; ports audio=%u control=%u timing=%u events=%u\n", 
 		p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport, p->rtp_ports.time.rport, p->rtp_ports.events.rport);
 
-	LOG_WARN("Need to implement network connections for audio (perhaps is ctrl?) and events");
+	LOG_WARN("Need to implement network connections for audio (perhaps is ctrl?)");
 	// p->rtp_ports.audio.fd = net_connect(p->peer_addr.s_addr, p->rtp_ports.audio.rport, SOCK_DGRAM, "AirPlay data");
 	// if (p->rtp_ports.audio.fd < 0)
 	// {
@@ -2050,11 +2055,19 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 	// }
 
 	// Reverse connection, used to receive playback events from device
-	// ret = airplay_events_listen(rs->devname, rs->address, rs->events_port, rs->shared_secret, rs->shared_secret_len);
-	// if (ret < 0)
-	// {
-	// 	DPRINTF(E_WARN, L_AIRPLAY, "Could not connect to '%s' events port %u, proceeding anyway\n", rs->devname, rs->events_port);
-	// }
+	LOG_INFO("RTSP exisitng connection remote port:%u, RTSP Events port:%u",
+		rtspcl_remote_port(p->rtspcl), p->rtp_ports.events.rport);
+	LOG_INFO(
+		"Calling airplay_events listen to setup event listener for RTSP message from the AirPlay2 device %s:%u",
+		inet_ntoa(p->peer_addr), p->rtp_ports.events.rport);
+	int ret = airplay_events_listen(p->name, &p->peer_addr, p->rtp_ports.events.rport, 
+		p->shared_secret, p->shared_secret_len);
+	if (ret < 0)
+	{
+		LOG_ERROR("Could not connect to %s:%u", inet_ntoa(p->peer_addr), p->rtp_ports.events.rport);
+		goto error;
+	}
+	LOG_INFO("AirPlay Events Listener now instantiated.");
 
 	p->state = AIRPLAY_STATE_SETUP;
 
@@ -3070,6 +3083,15 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
 	}
+	// We now have the airplay events listening socket open and the 
+	// airplay events listener setup. Time to start a thread for the
+	// airplay events to be handled.
+	// Create the AirPlay2 Events Managment thread
+	LOG_DEBUG("Create Events Management thread");
+	p->events_running = true;
+	pthread_create(&p->events_thread, NULL, _airplaycl_events_thread, (void*) p);
+	LOG_INFO("Events Management thread running");
+
 
 	// RTSP RECORD
 	if (payload_make_record(p) == -1) {
@@ -3126,6 +3148,45 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	_airplaycl_disconnect(p, true);
 
 	return false;
+}
+
+// Manage the AirPlay2 Events received from the AirPlay 2 Client
+// @param p the AirPlay 2 Client Handle
+// @returns -1 on failure, 0 on success
+// @note this must be run in it's own thread, because it starts an
+// event loop which is used to manage the RTSP data exchange between the
+// AirPlay 2 client and us. This has been copied from owntones and is a different
+// design pattern to the other listeners. We need to harmonise at some point in time
+void *_airplaycl_events_thread(void *args) {
+	struct airplaycl_s *p = (struct airplaycl_s *)args;
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay 2 Client Handle");
+		return (void *)NULL;
+	}
+
+	struct event_base *evbase = NULL;
+
+	if (!(evbase = event_base_new())) {
+		LOG_ERROR("Unable to create new event base. %s", strerror(errno));
+		return (void *)NULL;
+	}
+
+	if (evthread_use_pthreads()) {
+		LOG_ERROR("Error setting up libevent for use with pthreads");
+		goto error;
+	}
+
+	if (airplay_events_init()) {
+		LOG_ERROR("Error initialised airplay events");
+		goto error;
+	}
+
+	// Now run the event loop
+	event_base_dispatch(evbase);
+
+error:
+	event_base_free(evbase);
+	return (void *)NULL;
 }
 
 /*----------------------------------------------------------------------------*/

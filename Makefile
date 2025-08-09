@@ -22,7 +22,7 @@ EXECUTABLE = $(CORE)-$(PLATFORM)
 DEFINES  = -DNDEBUG -D_GNU_SOURCE -DCONFIG_OPENSSL
 CFLAGS  += -Wall -fPIC -ggdb -Og $(DEFINES) -fdata-sections -ffunction-sections
 
-LDFLAGS += -lpthread -ldl -lm -lplist-2.0 -luuid -lsodium -lgcrypt -L.
+LDFLAGS += -lpthread -ldl -lm -lplist-2.0 -luuid -lsodium -lgcrypt -levent -levent_pthreads -L.
 
 TOOLS		= crosstools/src
 FETCHER		= http-fetcher
@@ -51,7 +51,7 @@ CURVE25519_SOURCES = curve25519_dh.c curve25519_mehdi.c curve25519_order.c curve
 
 SOURCES = raop_client.c rtsp_client.c \
 	  raop_server.c raop_streamer.c \
-	  airplay_client.c \
+	  airplay_client.c airplay_events.c commands.c \
 	  aes.c aes_ctr.c \
 	  dmap_parser.c	\
 	  alac.c \

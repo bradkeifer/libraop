@@ -58,6 +58,7 @@ typedef struct rtspcl_s {
 	char description[256];	// The description of the status code
 	int read_timeout;		// ms timeout for reading RTSP Response
 	bool cipher_enabled;	// true if RTSP encryption/decryption enabled
+	uint16_t rport;			// The RTSP TCP connection remote port
 	int (*ciphercb)(void *, uint8_t **buf_out, size_t *buf_out_len, uint8_t *buf_in, int buf_in_len, int encrypt);
 	void *ciphercb_arg;
 
@@ -66,7 +67,6 @@ typedef struct rtspcl_s {
 // extern log_level 	raop_loglevel;
 // static log_level	*loglevel = &raop_loglevel;
 
-// Seems to be a bug here
 extern log_level 	main_log;
 static log_level 	*loglevel = &main_log;
 
@@ -136,6 +136,7 @@ bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr hos
 	p->session = NULL;
 	if ((p->fd = open_tcp_socket(local, NULL, true)) == -1) return false;
 	if (!tcp_connect_by_host(p->fd, host, destport)) return false;
+	p->rport = destport;
 
 	struct sockaddr_in name;
 	socklen_t namelen = sizeof(name);
@@ -238,6 +239,13 @@ char* rtspcl_local_ip(struct rtspcl_s *p) {
 	return strcpy(buf, inet_ntoa(p->local_addr));
 }
 
+/*----------------------------------------------------------------------------*/
+uint16_t rtspcl_remote_port(struct rtspcl_s *p) {
+	if (!p) return 0;
+
+	return p->rport;
+
+}
 /*----------------------------------------------------------------------------*/
 bool rtspcl_announce_sdp(struct rtspcl_s *p, char *sdp, char *passwd) {
 	if(!p) return false;
@@ -1315,7 +1323,7 @@ static void hexdump(const char *msg, uint8_t *mem, size_t len)
   int hexdump_cols = 16;
 
   if (msg)
-    printf("%s", msg);
+    printf("%s\n", msg);
 
   for (i = 0; i < len + ((len % hexdump_cols) ? (hexdump_cols - len % hexdump_cols) : 0); i++)
     {

@@ -100,6 +100,7 @@ bool rtspcl_remove_all_exthds(struct rtspcl_s *p);
 bool rtspcl_add_exthds(struct rtspcl_s *p, char *key, char *data);
 bool rtspcl_mark_del_exthds(struct rtspcl_s *p, char *key);
 char* rtspcl_local_ip(struct rtspcl_s *p);
+uint16_t rtspcl_remote_port(struct rtspcl_s *p);
 
 // AirPlay2 versions
 
