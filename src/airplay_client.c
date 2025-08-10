@@ -46,6 +46,7 @@
 #include "aes.h"
 #include "pair.h"
 #include "airplay_events.h"
+#include "misc.h"
 
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
@@ -80,6 +81,7 @@
 #define AIRPLAY_RTSP_HEADER_CLIENT_NAME				"X-Apple-Client-Name"
 #define AIRPLAY_RTSP_HEADER_PROTOCOL_VERISON		"X-Apple-ProtocolVersion"
 #define AIRPLAY_RTSP_HEADER_RANGE					"Range"
+#define AIRPLAY_RTSP_HEADER_RTP_INFO				"RTP-Info"
 
 // Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
@@ -532,7 +534,6 @@ static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
 
 /*----------------------- ? ---------------------------------*/
 
-static void *_airplaycl_events_thread(void *args);
 static void *_rtp_timing_thread(void *args);
 static void *_rtp_control_thread(void *args);
 static void _airplaycl_terminate_rtp(struct airplaycl_s *p);
@@ -670,6 +671,7 @@ static void hexdump(const char *msg, uint8_t *mem, size_t len)
 	}
     }
 }
+
 /* ----------------------- AirPlay Helpers --------------------------------*/
 
 // Print LOG_INFO output of current state of airplay session
@@ -1114,6 +1116,13 @@ error:
 
 /*--------------------- Other Sequencing Helpers - logic sourced from owntones ---------------------------*/
 
+// Construct the RTSP Request for RECORD.
+// This request contains the following header items:
+// X-Apple-ProtocolVersion: 1, and 
+// Range: npt=0-.
+// RTP-Info: seq=<p->seq_number + 1>;rtptime=<NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate)>
+// @param p the AirPlay2 Client Handle
+// @returns 0 on success, -1 on failure
 static int payload_make_record(struct airplaycl_s *p)
 {
 	char buf[64];
@@ -1132,14 +1141,21 @@ static int payload_make_record(struct airplaycl_s *p)
 		return -1;
 	}
 	LOG_DEBUG("RTP-Info: %s", buf);
-	airplay_rtsp_headers_add(p, "RTP-Info", buf);
+	airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_RTP_INFO, buf);
 
 	LOG_DEBUG("RTP-Info is %s\n", buf);
 
 	return 0;
 }
 
-
+// Construct the RTSP Request for SETUP (session).
+// This request sends the following data items to the AirPlay 2 device:
+// deviceID = p->device_id, 
+// sessionUUID = p->session_uuid, 
+// timingPort = p->rtp_ports.time.lport, and 
+// timingProtocol = NTP
+// @param p the AirPlay2 Client Handle
+// @returns 0 on success, -1 on failure
 static int payload_make_setup_session(struct airplaycl_s *p)
 {
 	plist_t root= NULL;
@@ -1184,148 +1200,6 @@ static int payload_make_setup_session(struct airplaycl_s *p)
 	return 0;
 }
 
-
-/*--------------------- Pairing Helpers - some logic sourced from owntones  ------------------------------*/
-
-// Construct the RTSP Request for GET /info
-// @param p the AirPlay 2 Client Handle
-// @returns 0 on success, -1 on failure
-static int payload_make_get_info(struct airplaycl_s *p)
-{
-	if (!p) {
-		LOG_ERROR("Invalid AirPlay 2 Client Handle");
-		return -1;
-	}
-
-	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_GET_INFO);
-	return 0;
-}
-
-static int payload_make_pin_start(struct airplaycl_s *p)
-{
-	LOG_INFO("Starting device pairing for '%s', go to the web interface and enter PIN\n", p->name);
-
-	airplay_rtsp_command_add(p, PAIR_AP_POST_PIN_START);
-	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
-	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
-
-	return 0;
-}
-
-// Generic handler for constructing RTSP pairing data
-// @param p the AirPlay client handle
-// @param step	the step number in the pairing sequence
-// @returns 0 on success, -1 on failure
-// @note The RTSP Request Headers and Payload information in the AirPlay client handle
-// @note are updated by the function. The caller is responsible for ensuring clean RTSP
-// @note request data before initiation.
-static int payload_make_pair_generic(struct airplaycl_s *p, int step)
-{
-	uint8_t *body = (uint8_t *)NULL;
-	size_t len = 0;
-	const char *errmsg;
-
-
-	switch (step) {
-		case 1:
-			body    = pair_setup_request1(&len, p->pair_setup_ctx);
-			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-			break;
-		case 2:
-			body    = pair_setup_request2(&len, p->pair_setup_ctx);
-			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-			break;
-		case 3:
-			body    = pair_setup_request3(&len, p->pair_setup_ctx);
-			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
-			break;
-			//   case 4:
-			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
-			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
-			// break;
-			//   case 5:
-			// body    = pair_verify_request2(&len, p->pair_verify_ctx);
-			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
-			// break;
-		default:
-			body    = NULL;
-			errmsg  = "Bug! Bad step number";
-	}
-
-	if (!body) {
-		LOG_ERROR("Verification step %d request error: %s", step, errmsg);
-		return -1;
-	}
-
-	airplay_rtsp_body_add(p, body, len);
-	if (body) {
-		free(body);
-	}
-
-	// Required!!
-	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
-		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
-	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
-		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
-
-	return 0;
-}
-
-// Handles pair-setup step 1
-// @param p the AirPlay client handle
-// @param arg the PIN to use for pairing
-// @returns 0 on success, -1 on failure
-// @note The RTSP Request Headers and Payload information in the AirPlay client handle
-// @note are updated by the function. The caller is responsible for ensuring clean RTSP
-// @note request data before initiation.
-static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
-{
-	const char *pin = arg;
-	uint64_t device_id = 0;
-	char device_id_hex[16 + 1];
-
-	if (!pin && p->passwd[0])
-		pin = &p->passwd[0]; // For password based authentication
-
-	if (pin)
-		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
-
-	device_id_colon_parse(&device_id, p->device_id);
-	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
-	LOG_DEBUG("Calling pair_setup_new with pair-type %s, pin %s, device_id %016" PRIX64,
-		airplay_pair_type_str(p->pair_type), pin, device_id_hex);
-
-	p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
-	if (!p->pair_setup_ctx) {
-		LOG_ERROR("Out of memory for verification setup context");
-		return -1;
-	}
-	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
-	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
-
-	p->state = AIRPLAY_STATE_AUTH;
-
-	return payload_make_pair_generic(p, 1);
-}
-
-static int
-payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
-{
-	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
-	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
-	return payload_make_pair_generic(p, 2);
-}
-
-// static int
-// payload_make_pair_setup3(struct airplaycl_s *p, void *arg)
-// {
-// 	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
-// 	return payload_make_pair_generic(p, 3);
-// }
-
-
 /*
 Audio formats
 
@@ -1363,7 +1237,13 @@ Bit 	Value 	Type
 32 	0x100000000 	AAC-ELD/48000/1
 */
 
-// Construct the RTSP Request for SETUP stream
+// Construct the RTSP Request for SETUP stream.
+// This request sends the following data items to the AirPlay 2 device:
+// audioFormat=ALAC/44100/16/2, audioMode=default, controlPort=p->rtp_ports.ctrl.lport, 
+// ct=ALAC (compression type), isMedia=true, latencyMax=88200, latencyMin=11025,
+// shk=p->shared_secret (shared key), spf=352 (frames per packet), 
+// sr=44100 (sample rate), type=realtime (RTP type), supportsDynamicStreamID=false,
+// streamConnectionID=p->session_id
 // @param p the AirPlay2 Client Handle
 // @returns 0 on success, -1 on failure
 static int payload_make_setup_stream(struct airplaycl_s *p)
@@ -1465,6 +1345,9 @@ error:
 }
 
 // Contract RTSP Request for SETPEERS
+// This request sends the following data items to the AirPlay 2 device:
+// p->peer_addr (the IP address of the AirPlay 2 device) and 
+// p->host_addr (our IP address i.e. the Music Player)
 // @param p the AirPlay 2 Client Handle
 // @returns 0 on success, -1 on failure
 static int payload_make_setpeers(struct airplaycl_s *p)
@@ -1515,11 +1398,190 @@ error:
 	return -1;
 }
 
+/*--------------------- Pairing Helpers - some logic sourced from owntones  ------------------------------*/
+
+// Construct the RTSP Request for GET /info
+// @param p the AirPlay 2 Client Handle
+// @returns 0 on success, -1 on failure
+static int payload_make_get_info(struct airplaycl_s *p)
+{
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay 2 Client Handle");
+		return -1;
+	}
+
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_GET_INFO);
+	return 0;
+}
+
+// Construct the RTSP Request for POST /pair-pin-start
+// @param p the AirPlay 2 Client Handle
+// @returns 0 on success, -1 on failure
+static int payload_make_pin_start(struct airplaycl_s *p)
+{
+	LOG_INFO("Starting device pairing for %s, be prepared to enter PIN\n", p->name);
+
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
+	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
+	else {
+		LOG_ERROR("Invalid pair type: %d:%s", p->pair_type, airplay_pair_type_str(p->pair_type));
+		return -1;
+	}
+	airplay_rtsp_command_add(p, PAIR_AP_POST_PIN_START);
+
+	return 0;
+}
+
+// Generic handler for constructing RTSP pairing data.
+// Prepares the RTSP Request body on the basis of the pairing context handle.
+// @param p the AirPlay client handle
+// @param step	the step number in the pairing sequence
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
+static int payload_make_pair_generic(struct airplaycl_s *p, int step)
+{
+	uint8_t *body = (uint8_t *)NULL;
+	size_t len = 0;
+	const char *errmsg;
+
+
+	switch (step) {
+		case 1:
+			body    = pair_setup_request1(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+		case 2:
+			body    = pair_setup_request2(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+		case 3:
+			body    = pair_setup_request3(&len, p->pair_setup_ctx);
+			errmsg  = pair_setup_errmsg(p->pair_setup_ctx);
+			break;
+			//   case 4:
+			// body    = pair_verify_request1(&len, p->pair_verify_ctx);
+			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+			// break;
+			//   case 5:
+			// body    = pair_verify_request2(&len, p->pair_verify_ctx);
+			// errmsg  = pair_verify_errmsg(p->pair_verify_ctx);
+			// break;
+		default:
+			body    = NULL;
+			errmsg  = "Bug! Bad step number";
+	}
+
+	if (!body) {
+		LOG_ERROR("Verification step %d request error: %s", step, errmsg);
+		return -1;
+	}
+
+	airplay_rtsp_body_add(p, body, len);
+	if (body) {
+		free(body);
+	}
+
+	// Required!!
+	if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL)
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "3");
+	else if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT)
+		airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR, "4");
+
+	return 0;
+}
+
+// Handles pair-setup step 1. Obtains pairing context on basis of PIN (if any) and Device ID.
+// RTSP Request body data is the obtained by the function from payload_make_generic() on the basis of the 
+// pairing context.
+// @param p the AirPlay client handle
+// @param arg the PIN to use for pairing
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
+static int payload_make_pair_setup1(struct airplaycl_s *p, void* arg)
+{
+	const char *pin = arg;
+	uint64_t device_id = 0;
+	char device_id_hex[16 + 1];
+
+	if (!pin && p->passwd[0])
+		pin = &p->passwd[0]; // For password based authentication
+
+	if (pin)
+		p->pair_type = PAIR_CLIENT_HOMEKIT_NORMAL;
+
+	device_id_colon_parse(&device_id, p->device_id);
+	snprintf(device_id_hex, sizeof(device_id_hex), "%016" PRIX64, device_id);
+	LOG_DEBUG("Calling pair_setup_new with pair-type %s, pin %s, device_id %016" PRIX64,
+		airplay_pair_type_str(p->pair_type), pin, device_id_hex);
+
+	p->pair_setup_ctx = pair_setup_new(p->pair_type, pin, NULL, NULL, device_id_hex);
+	if (!p->pair_setup_ctx) {
+		LOG_ERROR("Out of memory for verification setup context");
+		return -1;
+	}
+	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
+
+	p->state = AIRPLAY_STATE_AUTH;
+
+	return payload_make_pair_generic(p, 1);
+}
+
+// Handles pair-setup step 2.
+// RTSP Request body data is the obtained by the function from payload_make_generic()
+// on the basis of it being step 2 of the pairing setup.
+// @param p the AirPlay client handle
+// @param arg the PIN to use for pairing
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
+static int payload_make_pair_setup2(struct airplaycl_s *p, void *arg)
+{
+	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+	airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_OCTET_STREAM);
+	return payload_make_pair_generic(p, 2);
+}
+
+// Handles pair-setup step 3.
+// RTSP Request command is set to POST /pair-setup
+// RTSP Request body data is the obtained by the function from payload_make_generic()
+// on the basis of it being step 3 of the pairing setup.
+// @param p the AirPlay client handle
+// @param arg the PIN to use for pairing
+// @returns 0 on success, -1 on failure
+// @note The RTSP Request Headers and Payload information in the AirPlay client handle
+// @note are updated by the function. The caller is responsible for ensuring clean RTSP
+// @note request data before initiation.
+// static int payload_make_pair_setup3(struct airplaycl_s *p, void *arg)
+// {
+// 	airplay_rtsp_command_add(p, PAIR_AP_POST_SETUP);
+// 	return payload_make_pair_generic(p, 3);
+// }
+
+
 /*----------------------- Response Handlers --------------------------------------*/
 
-// Extract statusFlags from plist in RTSP Response and determine next sequence
-// @param response the RTSP response data
+// Extracts data items from the plist in RTSP Response and determines the next sequence.
+// The following data items are extracted:
+// deviceID is written to p->device_id, 
+// deviceName is written to p->name, 
+// features is written to p->features, 
+// statusFlags is written to p->status_flags.
+// The statusFlags are analysed to determine the pairing type and the state. 
+// Pairing type is updated in p->pair_type to one of AIRPLAY_HOMEKIT_NORMAL or AIRPLAY_HOMEKIT_TRANSIENT.
+// State is updted in p->state to one of AIRPLAY_STATE_INFO or AIRPLAY_STATE_AUTH.
 // @param p the AirPlay 2 client handle
+// @returns the next sequence, which on success can be one of AIRPLAY_SEQ_PAIR_VERIFY, 
+// AIRPLAY_SEQ_PIN_START, AIRPLAY_SEQ_PAIR_TRANSIENT. On failure it is AIRPLAY_SEQ_ABORT
+// @note this function is only partially complete in its handling of various permutations of
+// pairing scenarios. It needs enhancement as further devices are tested.
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p)
 {
 	plist_t response = NULL;
@@ -1561,7 +1623,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	item = plist_dict_get_item(response, AIRPLAY_PLIST_NAME);
 	if (item) {
 		name = (char *) plist_get_string_ptr(item, NULL);
-		LOG_DEBUG("Device ID: %s", name);
+		LOG_DEBUG("Device name: %s", name);
 	}
 	else {
 		LOG_ERROR("No Device name. Please raise an issue in %s", GITHUB);
@@ -1569,7 +1631,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 	}
 
 	if (strlen(name) > AIRPLAY_NAME_SIZE) {
-		LOG_ERROR("Device Id %s exceeds maximum size of %d bytes", name, AIRPLAY_NAME_SIZE);
+		LOG_ERROR("Device name %s exceeds maximum size of %d bytes", name, AIRPLAY_NAME_SIZE);
 		LOG_ERROR("Please raise an issue in %s", GITHUB);
 		goto error;
 	}
@@ -1588,7 +1650,7 @@ static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p
 		goto error;
 	}
 
-	item = plist_dict_get_item(response, "statusFlags");
+	item = plist_dict_get_item(response, AIRPLAY_PLIST_STATUS_FLAGS);
 	if (item) {
 		plist_get_uint_val(item, &p->status_flags);
 	}
@@ -1664,6 +1726,21 @@ error:
 	return AIRPLAY_SEQ_ABORT;
 }
 
+// Extracts data items from the plist in RTSP Response and determines the next sequence.
+// The following data items are extracted:
+// deviceID is written to p->device_id, 
+// deviceName is written to p->name, 
+// features is written to p->features, 
+// statusFlags is written to p->status_flags.
+// The statusFlags are analysed to determine the pairing type and the state. 
+// Pairing type is updated in p->pair_type to one of AIRPLAY_HOMEKIT_NORMAL or AIRPLAY_HOMEKIT_TRANSIENT.
+// State is updted in p->state to one of AIRPLAY_STATE_INFO or AIRPLAY_STATE_AUTH.
+// @param p the AirPlay 2 client handle
+// @returns the sequence type, which is obtained directly from response_handler_info_generic().
+// If response_handler_info_generic() does not return AIPLAY_SEQ_ABORT or AIRPLAY_SEQ_PIN_START, then
+// p->next_seq is set to AIRPLAY_SEQ_START_PLAYBACK and the sequence type returned from response_handler_info_generic()
+// is returned.
+// On failure AIRPLAY_SEQ_ABORT is returned and p->state is set to AIRPLAY_STATE_FAILED.
 static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 {
 	enum airplay_seq_type seq_type;
@@ -1679,7 +1756,7 @@ static enum airplay_seq_type response_handler_info_start(struct airplaycl_s *p)
 			p->rtsp_response.content_type, AIRPLAY_CONTENT_TYPE_PLIST);
 		goto error;
 	}
-	if (p->rtsp_response.status_code != 200) {
+	if (p->rtsp_response.status_code != RTSP_OK) {
 		LOG_ERROR("RTSP Request failed with status %d %s",
 			p->rtsp_response.status_code, p->rtsp_response.description);
 		goto error;
@@ -1699,18 +1776,31 @@ error:
 
 // Response handler for pairing with a PIN
 // @param p The AirPlay 2 Client Handle
-// @returns the next sequence
+// @returns the next sequence which on success will be AIRPLAY_SEQ_CONTINUE, 
+// with p->state set to AIRPLAY_STATE_AUTH. AIRPLAY_SEQ_ABORT will be returned on failure, 
+// with p->state set to AIRPLAY_STATE_FAILED.
 static enum airplay_seq_type response_handler_pin_start(struct airplaycl_s *p)
 {
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("RTSP Request failed with status %d %s",
+			p->rtsp_response.status_code, p->rtsp_response.description);
+		goto error;
+	}
 	p->state = AIRPLAY_STATE_AUTH;
 
 	return AIRPLAY_SEQ_CONTINUE; // TODO before we reported failure since device is locked
+error:
+	p->state = AIRPLAY_STATE_FAILED;
+	return AIRPLAY_SEQ_ABORT;
 }
 
-// Common response handler for the various pairing scenarios. This handler determines the
-// pair setup context from the RTSP Response data and returns the appropriate airplay sequence.
+// Common response handler for the various pairing scenarios. This handler calls
+// functions from the pair_ap library which assess the RTSP response on the basis of the
+// relevant pairing context to determine success or failure.
 // @param step the pairing step number
 // @param p the AirPlay 2 Client Handle
+// @returns AIRPLAY_SEQ_CONTINUE on success. On failure, AIRPLAY_SEQ_ABORT is returned and
+// p->state is set to AIRPLAY_STATE_FAILED.
 static enum airplay_seq_type response_handler_pair_generic(int step, struct airplaycl_s *p)
 {
 	uint8_t *response;
@@ -1758,6 +1848,15 @@ static enum airplay_seq_type response_handler_pair_generic(int step, struct airp
 	return AIRPLAY_SEQ_CONTINUE;
 }
 
+// RTSP response handler for pair setup 1. Under normal circumstances, the
+// sequence type returned is derived directly from calling response_handler_pair_generic()
+// with step 1. However, it is possible that the AirPlay 2 device may have returned a 470 
+// response, which indicates that Authorisation is required.
+// @param p the AirPlay 2 Client Handle
+// @returns Under nromal circumstances, AIRPLAY_SEQ_CONTINUE will be returned on success.
+// However, if Authorisation is required, then AIRPLAY_SEQ_PIN_START will be returned and
+// p->pair_type will be changed from PAIR_CLIENT_HOMEKIT_TRANSIENT to PAIR_CLIENY_HOMEKIT_NORMAL.
+// On failure, AIRPLAY_SEQ_ABORT is returned and p->state is set to AIRPLAY_STATE_FAILED.
 static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 {
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT && 
@@ -1773,11 +1872,24 @@ static enum airplay_seq_type response_handler_pair_setup1(struct airplaycl_s *p)
 			"with pair_type PAIR_CLIENT_HOMEKIT_NORMAL");
 		return AIRPLAY_SEQ_PIN_START;
 	}
+	else if (p->rtsp_response.status_code == RTSP_OK) {
+		return response_handler_pair_generic(1, p);
+	}
 
-	return response_handler_pair_generic(1, p);
+	p->state = AIRPLAY_STATE_FAILED;
+	return AIRPLAY_SEQ_ABORT;
+
 }
 
 
+// RTSP response handler for pair setup 2. 
+// Under normal circumstances, this step of the pairing process requires the establishment of 
+// the ciphering setups for the remainder of the session. The pairing 
+// context is used to determine the shared secret, which then in turn is used to establish the
+// ciphering setups for control cipering and packet ciphering.
+// @param p the AirPlay 2 Client Handle
+// @returns AIRPLAY_SEQ_CONTINUE will be returned on success.
+// On failure, AIRPLAY_SEQ_ABORT is returned and p->state is set to AIRPLAY_STATE_FAILED.
 static enum airplay_seq_type response_handler_pair_setup2(struct airplaycl_s *p)
 {
 	enum airplay_seq_type seq_type;
@@ -1854,6 +1966,10 @@ error:
 // 	return AIRPLAY_SEQ_CONTINUE;
 // }
 
+// Handles the RTSP reponse from the RTSP SETPEERS request 
+// @param p the AirPlay 2 Client Handle
+// @returns AIRPLAY_SEQ_CONTINUE on success.
+// AIRPLAY_SEQ_ABORT on failure.
 static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p)
 {
 	if (p->rtsp_response.status_code != RTSP_OK) {
@@ -1957,11 +2073,15 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 	return AIRPLAY_SEQ_ABORT;
 }
 
-
+// Handle RTSP Response from RECORD Request
+// We obtain ?? from the AirPlay 2 device
+// @param p the AirPlay 2 Client Handle
+// @returns AIRPLAY_SEQ_CONTINUE if a 200 OK RTSP Response, AIRPLAY_SEQ_ABORT if not
+// @note the AirPlay state is updated to AIRPLAY_STATE_RECORD
 static enum airplay_seq_type response_handler_record(struct airplaycl_s *p)
 {
 	if (p->rtsp_response.status_code != RTSP_OK) {
-		LOG_ERROR("SETPEERS error. Response %d: %s", 
+		LOG_ERROR("RECORD error. Response %d: %s", 
 			p->rtsp_response.status_code, p->rtsp_response.description);
 	
 		return AIRPLAY_SEQ_ABORT;
@@ -1972,6 +2092,12 @@ static enum airplay_seq_type response_handler_record(struct airplaycl_s *p)
 	return AIRPLAY_SEQ_CONTINUE;
 }
 
+// Handle RTSP Response from SETUP (session) Request
+// We obtain the dataPort and controlPort from the AirPlay 2 device
+// @param p the AirPlay 2 Client Handle
+// @returns the next sequence to action
+// @note the dataPort received is written to p->rtp_ports.audio.rport
+// @note the controlPort received is written to p->rtp_ports.ctrl.rport
 static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p)
 {
 	plist_t response = NULL;
@@ -1987,14 +2113,14 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 		goto error;
 	}
 	else if (p->rtsp_response.length <= 0) {
-		LOG_ERROR("No RTSP Response data");
+		LOG_ERROR("No RTSP Response data from %s", p->name);
 		goto error;
 	}
 	else if (!strncmp(p->rtsp_response.content_type, 
 			AIRPLAY_CONTENT_TYPE_PLIST, 
 			strlen(AIRPLAY_CONTENT_TYPE_PLIST))) {
-		LOG_ERROR("Invalid content type in RTSP Response. Expected %s, but got %s",
-			AIRPLAY_CONTENT_TYPE_PLIST, p->rtsp_response.content_type);
+		LOG_ERROR("Invalid content type in RTSP Response from %s. Expected %s, but got %s",
+			p->name, AIRPLAY_CONTENT_TYPE_PLIST, p->rtsp_response.content_type);
 		goto error;
 	}
 
@@ -2038,36 +2164,13 @@ static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p
 
 	if (p->rtp_ports.audio.rport == 0 || p->rtp_ports.ctrl.rport == 0)
 	{
-		LOG_ERROR("Missing port number in reply from '%s' (d=%u, c=%u)\n", 
+		LOG_ERROR("Missing port number in reply from %s (data=%u, control=%u)\n", 
 			p->name, p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport);
 		goto error;
 	}
 
-	LOG_DEBUG("Negotiated UDP streaming session; ports audio=%u control=%u timing=%u events=%u\n", 
+	LOG_DEBUG("Negotiated streaming session; ports data/audio=%u control=%u timing=%u events=%u\n", 
 		p->rtp_ports.audio.rport, p->rtp_ports.ctrl.rport, p->rtp_ports.time.rport, p->rtp_ports.events.rport);
-
-	LOG_WARN("Need to implement network connections for audio (perhaps is ctrl?)");
-	// p->rtp_ports.audio.fd = net_connect(p->peer_addr.s_addr, p->rtp_ports.audio.rport, SOCK_DGRAM, "AirPlay data");
-	// if (p->rtp_ports.audio.fd < 0)
-	// {
-	// 	LOG_WARN("Could not connect to data port. %s", strerror(errno));
-	// 	goto error;
-	// }
-
-	// Reverse connection, used to receive playback events from device
-	LOG_INFO("RTSP exisitng connection remote port:%u, RTSP Events port:%u",
-		rtspcl_remote_port(p->rtspcl), p->rtp_ports.events.rport);
-	LOG_INFO(
-		"Calling airplay_events listen to setup event listener for RTSP message from the AirPlay2 device %s:%u",
-		inet_ntoa(p->peer_addr), p->rtp_ports.events.rport);
-	int ret = airplay_events_listen(p->name, &p->peer_addr, p->rtp_ports.events.rport, 
-		p->shared_secret, p->shared_secret_len);
-	if (ret < 0)
-	{
-		LOG_ERROR("Could not connect to %s:%u", inet_ntoa(p->peer_addr), p->rtp_ports.events.rport);
-		goto error;
-	}
-	LOG_INFO("AirPlay Events Listener now instantiated.");
 
 	p->state = AIRPLAY_STATE_SETUP;
 
@@ -2685,6 +2788,15 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	airplaycld = malloc(sizeof(airplaycl_data_t));
 	memset(airplaycld, 0, sizeof(airplaycl_data_t));
 
+	// Initialise airplay events and create it's thread. Do this early
+	// so we don't have much dynamic memory to free if this fails.
+	airplaycld->events_running = true;
+	if (airplay_events_init()) {
+		LOG_ERROR("Error initialising airplay events");
+		airplaycld->events_running = false;
+		goto error;
+	}
+
 	//  airplaycld->sane is set to 0
 	uuid_make(airplaycld->session_uuid);
 	gcry_randomize(&airplaycld->session_id, sizeof(airplaycld->session_id), GCRY_STRONG_RANDOM);
@@ -2743,6 +2855,10 @@ struct airplaycl_s *airplaycl_create(struct in_addr host, uint16_t port_base, ui
 	airplaycl_sanitize(airplaycld);
 
 	return airplaycld;
+
+error:
+	if (airplaycld) free(airplaycld);
+	return (struct airplaycl_s *)NULL;
   
 }
 
@@ -2941,14 +3057,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	} while (p->rtp_ports.ctrl.fd < 0 && port.count < p->port_range);
 	if (p->rtp_ports.ctrl.fd < 0) goto erexit;
 
-	// Open Audio port
-	p->rtp_ports.audio.rport = 0;
-	do {
-		p->rtp_ports.audio.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
-		p->rtp_ports.audio.fd = open_udp_socket(p->host_addr, &p->rtp_ports.audio.lport, false);
-	} while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
-	if (p->rtp_ports.audio.fd < 0) goto erexit;
-
 	if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 		p->state == AIRPLAY_STATE_INFO &&
 		p->next_seq == AIRPLAY_SEQ_PAIR_TRANSIENT) {
@@ -3083,15 +3191,30 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
 	}
-	// We now have the airplay events listening socket open and the 
-	// airplay events listener setup. Time to start a thread for the
-	// airplay events to be handled.
-	// Create the AirPlay2 Events Managment thread
-	LOG_DEBUG("Create Events Management thread");
-	p->events_running = true;
-	pthread_create(&p->events_thread, NULL, _airplaycl_events_thread, (void*) p);
-	LOG_INFO("Events Management thread running");
 
+	// Open Audio port - we have audio.rport already from the RTSP SETUP (stream) response
+	// but we use lport below to bind to. How can there ever be a session created between lport and rport??
+	// let's port owntones net_connect() to here.
+	// do {
+	// 	p->rtp_ports.audio.lport = p->port_base + ((port.offset + port.count++) % p->port_range);
+	// 	p->rtp_ports.audio.fd = open_udp_socket(p->host_addr, &p->rtp_ports.audio.lport, false);
+	// } while (p->rtp_ports.audio.fd < 0 && port.count < p->port_range);
+	// if (p->rtp_ports.audio.fd < 0) goto erexit;
+	p->rtp_ports.audio.fd = net_connect(inet_ntoa(p->peer_addr), p->rtp_ports.audio.rport, SOCK_DGRAM, false);
+
+	// Reverse TCP connection, used to receive playback events from device
+	LOG_INFO(
+		"Setup event listener from %s:%u for RTSP message from AirPlay2 device %s",
+		inet_ntoa(p->peer_addr), p->rtp_ports.events.rport, p->name);
+	int ret = airplay_events_listen(p->name, &p->peer_addr, p->rtp_ports.events.rport, 
+		p->shared_secret, p->shared_secret_len);
+	if (ret < 0)
+	{
+		LOG_ERROR("Could not connect to %s:%u", inet_ntoa(p->peer_addr), p->rtp_ports.events.rport);
+		goto erexit;
+	}
+	p->rtp_ports.events.fd = ret;
+	LOG_INFO("AirPlay Events Listener now instantiated.");
 
 	// RTSP RECORD
 	if (payload_make_record(p) == -1) {
@@ -3148,45 +3271,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	_airplaycl_disconnect(p, true);
 
 	return false;
-}
-
-// Manage the AirPlay2 Events received from the AirPlay 2 Client
-// @param p the AirPlay 2 Client Handle
-// @returns -1 on failure, 0 on success
-// @note this must be run in it's own thread, because it starts an
-// event loop which is used to manage the RTSP data exchange between the
-// AirPlay 2 client and us. This has been copied from owntones and is a different
-// design pattern to the other listeners. We need to harmonise at some point in time
-void *_airplaycl_events_thread(void *args) {
-	struct airplaycl_s *p = (struct airplaycl_s *)args;
-	if (!p) {
-		LOG_ERROR("Invalid AirPlay 2 Client Handle");
-		return (void *)NULL;
-	}
-
-	struct event_base *evbase = NULL;
-
-	if (!(evbase = event_base_new())) {
-		LOG_ERROR("Unable to create new event base. %s", strerror(errno));
-		return (void *)NULL;
-	}
-
-	if (evthread_use_pthreads()) {
-		LOG_ERROR("Error setting up libevent for use with pthreads");
-		goto error;
-	}
-
-	if (airplay_events_init()) {
-		LOG_ERROR("Error initialised airplay events");
-		goto error;
-	}
-
-	// Now run the event loop
-	event_base_dispatch(evbase);
-
-error:
-	event_base_free(evbase);
-	return (void *)NULL;
 }
 
 /*----------------------------------------------------------------------------*/

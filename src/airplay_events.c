@@ -28,7 +28,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <ctype.h>
-
+#include <arpa/inet.h>
 #include <pthread.h>
 #include <event2/event.h>
 #include <event2/buffer.h>
@@ -36,10 +36,11 @@
 
 #include "airplay_events.h"
 #include "commands.h"
-// #include "misc.h"
+#include "misc.h"
 // #include "logger.h"
 #include "cross_log.h"
-#include "cross_net.h"
+// #include "cross_net.h"
+// #include "misc.h"
 // #include "player.h"
 #include "pair.h"
 
@@ -533,17 +534,17 @@ int
 airplay_events_listen(const char *name, struct in_addr *address, unsigned short port, 
                       const uint8_t *key, size_t key_len)
 {
-  int fd;
-  int ret;
+  int fd = -1;
+  int ret = -1;
 
-  LOG_DEBUG("Attempting to open a blocking socket on %s, port %u", inet_ntoa(*address), port);
-  fd = open_tcp_socket(*address, &port, true);
+  LOG_DEBUG("Attempting to open a non-blocking socket on %s, port %u", inet_ntoa(*address), port);
+  fd = net_connect(inet_ntoa(*address), port, SOCK_STREAM, false);
   if (fd < 0) {
     LOG_ERROR("Unable to open TCP socket for airplay events listening. %s", 
       strerror(errno));
     return -1;
   }
-  LOG_DEBUG("Opened blocking TCP socket with %s, port %u", inet_ntoa(*address), port);
+  LOG_DEBUG("Opened non-blocking TCP socket with %s, port %u", inet_ntoa(*address), port);
 
   ret = client_add(name, fd, key, key_len);
   if (ret < 0) {
@@ -551,16 +552,18 @@ airplay_events_listen(const char *name, struct in_addr *address, unsigned short 
     close(fd);
     return -1;
   }
+  LOG_DEBUG("Client added");
 
   return fd;
 }
 
 /* Thread: main */
 int
-airplay_events_init(void)
+airplay_events_init()
 {
   int ret;
 
+	LOG_DEBUG("Create Events Management thread");
   if ((evbase = event_base_new()) == NULL) {
     LOG_ERROR("evbase event_base_new() error. %s", strerror(errno));
     goto error;
@@ -580,6 +583,7 @@ airplay_events_init(void)
 
 // TODO  thread_name_set(thread_id, "airplay events");
 
+	LOG_INFO("Events Management thread running");
   return 0;
 
 error:
