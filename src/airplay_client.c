@@ -76,6 +76,8 @@
 #define AIRPLAY_COMMAND_SETUP						"SETUP"
 #define AIRPLAY_COMMAND_RECORD						"RECORD"
 #define AIRPLAY_COMMAND_SET_PARAMETER				"SET_PARAMETER"
+#define AIRPLAY_COMMAND_FLUSH						"FLUSH"
+#define AIRPLAY_COMMAND_TEARDOWN					"TEARDOWN"
 
 // AirPlay 2 RTSP Headers
 #define AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR			"X-Apple-HKP"
@@ -503,6 +505,8 @@ static int payload_make_setup_session(struct airplaycl_s *p);
 static int payload_make_setup_stream(struct airplaycl_s *p);
 static int payload_make_record(struct airplaycl_s *p);
 static int payload_make_set_volume(struct airplaycl_s *p);
+static int payload_make_flush(struct airplaycl_s *p);
+static int payload_make_teardown(struct airplaycl_s *p);
 
 
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
@@ -512,6 +516,8 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_record(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_volume_start(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_flush(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_teardown(struct airplaycl_s *p);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -1058,7 +1064,6 @@ static void airplay_rtsp_response_deinit(struct airplaycl_s *p){
 		return;
 	}
 	if (!p->rtsp_response.rtsp_response) {
-		LOG_WARN("There is no RTSP Response");
 		return;
 	}
 	airplay_rtsp_response_clean(p);
@@ -1178,6 +1183,33 @@ payload_make_set_volume(struct airplaycl_s *p)
 		return -1;
 	}
 
+	return 0;
+}
+
+
+static int payload_make_flush(struct airplaycl_s *p)
+{
+	char buf[64];
+	int ret;
+
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_FLUSH);
+	ret = snprintf(buf, sizeof(buf), "seq=%" PRIu16 ";rtptime=%" PRIu64, 
+		p->seq_number + 1, p->head_ts + 1);
+	if ((ret < 0) || (ret >= sizeof(buf))) {
+		LOG_ERROR("RTP-Info too big for buffer in RECORD request\n");
+		return -1;
+	}
+	airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_RTP_INFO, buf);
+
+	return 0;
+}
+
+static int payload_make_teardown(struct airplaycl_s *p)
+{
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_TEARDOWN);
+	// Normally we update status when we get the response, but teardown is an
+	// exception because we want to stop writing to the device immediately
+	p->state = AIRPLAY_STATE_TEARDOWN;
 	return 0;
 }
 
@@ -2133,10 +2165,31 @@ static enum airplay_seq_type response_handler_volume_start(struct airplaycl_s *p
 	if (p->rtsp_response.status_code != RTSP_OK) {
 		LOG_ERROR("SET_PARAMETER error. Response %d: %s", 
 			p->rtsp_response.status_code, p->rtsp_response.description);
-	
 		return AIRPLAY_SEQ_ABORT;
 	}
 
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
+static enum airplay_seq_type response_handler_flush(struct airplaycl_s *p)
+{
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("FLUSH error. Response %d: %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description);
+		return AIRPLAY_SEQ_ABORT;
+	}
+	p->state = AIRPLAY_STATE_CONNECTED;
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
+static enum airplay_seq_type response_handler_teardown(struct airplaycl_s *p)
+{
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("TEARDOWN error. Response %d: %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description);
+		return AIRPLAY_SEQ_ABORT;
+	}
+	p->state = AIRPLAY_STATE_STOPPED;
 	return AIRPLAY_SEQ_CONTINUE;
 }
 
@@ -3285,7 +3338,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	if (p->raop_state == AIRPLAY_DOWN) p->raop_state = AIRPLAY_FLUSHED;
 	pthread_mutex_unlock(&p->mutex);
 
-	LOG_INFO("Implement volume setting exchange");
 	// RTSP SET_PARAMETER (volume)
 	if (payload_make_set_volume(p) == -1) {
 		LOG_ERROR("Error constructing RTSP SET_PARAMETER (volume) request");
@@ -3295,13 +3347,9 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_volume_start(p);
-	LOG_DEBUG("Handled set_volume response");
 	airplay_rtsp_request_clean(p);
-	LOG_DEBUG("Request cleaned");
 	airplay_rtsp_response_clean(p);
-	LOG_DEBUG("Response cleaned");
 	airplay_session_status_log_info(p);
-	LOG_DEBUG("Status logged");
 	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
@@ -3329,7 +3377,35 @@ bool _airplaycl_disconnect(struct airplaycl_s *p, bool force)
 
 	_airplaycl_terminate_rtp(p);
 
-	rc = rtspcl_flush(p->rtspcl, p->seq_number + 1, p->head_ts + 1);
+	// RTSP FLUSH
+	if (payload_make_flush(p) == -1) {
+		LOG_ERROR("Error constructing RTSP FLUSH request");
+		goto skip_flush;
+	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_flush(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	airplay_session_status_log_info(p);
+
+skip_flush:
+	// RTSP TEARDOWN
+	if (payload_make_teardown(p) == -1) {
+		LOG_ERROR("Error constructing RTSP FLUSH request");
+		goto skip_teardown;
+	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_teardown(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	airplay_session_status_log_info(p);
+
+
+skip_teardown:
 	rc &= rtspcl_disconnect(p->rtspcl);
 	rc &= rtspcl_remove_all_exthds(p->rtspcl);
 

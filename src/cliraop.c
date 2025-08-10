@@ -708,7 +708,6 @@ int main(int argc, char *argv[])
 	if (ap_version == 1)
 		raopcl_disconnect(raopcl);
 	else if (ap_version == 2) {
-		LOG_INFO("TODO: Test airplay_disconnect()");
 		airplaycl_disconnect(airplaycl);
 	}
 	pthread_join(glCmdPipeReaderThread, NULL);
@@ -721,7 +720,6 @@ exit:
 	if (ap_version == 1)
 		raopcl_destroy(raopcl);
 	else if (ap_version == 2) {
-		LOG_INFO("TODO: Test airplay_destroy()");
 		airplaycl_destroy(airplaycl);
 	}
 	close_platform();

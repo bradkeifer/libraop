@@ -158,7 +158,6 @@ bool rtspcl_disconnect(struct rtspcl_s *p) {
 	bool rc = true;
 
 	if (p->fd != -1) {
-		rc = exec_request(p, "TEARDOWN", NULL, NULL, 0, 1, NULL, NULL, NULL, NULL, NULL);
 		closesocket(p->fd);
 	}
 
