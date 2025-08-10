@@ -41,6 +41,7 @@ typedef struct rtp_port_s {
 #define AIRPLAY_CONTENT_TYPE_PLIST				"application/x-apple-binary-plist"
 #define AIRPLAY_CONTENT_TYPE_OCTET_STREAM		"application/octet-stream"
 #define AIRPLAY_CONTENT_TYPE_SETPEERS			"/peer-list-changed"
+#define AIRPLAY_CONTENT_TYPE_TEXT_PARAMETERS	"text/parameters"
 
 /* Response codes */
 #define RTSP_OK			200

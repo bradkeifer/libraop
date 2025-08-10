@@ -75,6 +75,7 @@
 #define AIRPLAY_COMMAND_SETPEERS					"SETPEERS"
 #define AIRPLAY_COMMAND_SETUP						"SETUP"
 #define AIRPLAY_COMMAND_RECORD						"RECORD"
+#define AIRPLAY_COMMAND_SET_PARAMETER				"SET_PARAMETER"
 
 // AirPlay 2 RTSP Headers
 #define AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR			"X-Apple-HKP"
@@ -82,6 +83,7 @@
 #define AIRPLAY_RTSP_HEADER_PROTOCOL_VERISON		"X-Apple-ProtocolVersion"
 #define AIRPLAY_RTSP_HEADER_RANGE					"Range"
 #define AIRPLAY_RTSP_HEADER_RTP_INFO				"RTP-Info"
+#define AIRPLAY_RTSP_HEADER_VOLUME					"volume"
 
 // Miscellaneous max sizes
 #define AIRPLAY_DEVICE_ID_SIZE	17		// Max length of "deviceID" key in plist info.
@@ -500,6 +502,7 @@ static int payload_make_setpeers(struct airplaycl_s *p);
 static int payload_make_setup_session(struct airplaycl_s *p);
 static int payload_make_setup_stream(struct airplaycl_s *p);
 static int payload_make_record(struct airplaycl_s *p);
+static int payload_make_set_volume(struct airplaycl_s *p);
 
 
 static enum airplay_seq_type response_handler_info_generic(struct airplaycl_s *p);
@@ -508,6 +511,7 @@ static enum airplay_seq_type response_handler_setpeers(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_setup_stream(struct airplaycl_s *p);
 static enum airplay_seq_type response_handler_record(struct airplaycl_s *p);
+static enum airplay_seq_type response_handler_volume_start(struct airplaycl_s *p);
 
 /* ----------------------- Pairing Helpers --------------------------------*/
 
@@ -879,6 +883,7 @@ static bool airplay_rtsp_content_type_add(struct airplaycl_s *p, char *content_t
 // @param p the AirPlay client handle
 // @returns true on success, false on failure
 static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
+	int i = 0;
 
 	if (!p) {
 		LOG_ERROR("Invalid Airplay client handle");
@@ -890,7 +895,10 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
 		return true;
 	}
 
-	kd_free(p->rtsp_request.headers.kd);
+	for (i=0; i < p->rtsp_request.headers.count; i++) {
+		free(p->rtsp_request.headers.kd[i].key);
+		free(p->rtsp_request.headers.kd[i].data);
+	}
 	p->rtsp_request.headers.count = 0;
 
 	return true;
@@ -949,6 +957,7 @@ static bool airplay_rtsp_body_clean(struct airplaycl_s *p) {
 		LOG_ERROR("Invalid Airplay client handle");
 		return false;
 	}
+	LOG_DEBUG("p->rtsp_request.body.length:%d", p->rtsp_request.body.length);
 	p->rtsp_request.body.length = 0;
 	memset(p->rtsp_request.body.mem, 0, RTSP_MAX_BODY);
 	return true;
@@ -1147,6 +1156,31 @@ static int payload_make_record(struct airplaycl_s *p)
 
 	return 0;
 }
+
+static int
+payload_make_set_volume(struct airplaycl_s *p)
+{
+	char volstr[32];
+
+	/* Don't let locales get in the way here */
+	/* We use -%d and -(int)raop_volume so -0.3 won't become 0.3 */
+	snprintf(volstr, sizeof(volstr), "-%d.%06d", -(int)p->volume, -(int)(1000000.0 * (p->volume - (int)p->volume)));
+
+	LOG_DEBUG("Sending volume %s to %s", volstr, p->name);
+
+	if (!airplay_rtsp_command_add(p, AIRPLAY_COMMAND_SET_PARAMETER)) {
+		return -1;
+	}
+	if (!airplay_rtsp_headers_add(p, AIRPLAY_RTSP_HEADER_VOLUME, volstr)) {
+		return -1;
+	}
+	if (!airplay_rtsp_content_type_add(p, AIRPLAY_CONTENT_TYPE_TEXT_PARAMETERS)) {
+		return -1;
+	}
+
+	return 0;
+}
+
 
 // Construct the RTSP Request for SETUP (session).
 // This request sends the following data items to the AirPlay 2 device:
@@ -2074,7 +2108,6 @@ static enum airplay_seq_type response_handler_setup_session(struct airplaycl_s *
 }
 
 // Handle RTSP Response from RECORD Request
-// We obtain ?? from the AirPlay 2 device
 // @param p the AirPlay 2 Client Handle
 // @returns AIRPLAY_SEQ_CONTINUE if a 200 OK RTSP Response, AIRPLAY_SEQ_ABORT if not
 // @note the AirPlay state is updated to AIRPLAY_STATE_RECORD
@@ -2088,6 +2121,21 @@ static enum airplay_seq_type response_handler_record(struct airplaycl_s *p)
 	}
 
 	p->state = AIRPLAY_STATE_RECORD;
+
+	return AIRPLAY_SEQ_CONTINUE;
+}
+
+// Handle RTSP Response from SET_PARAMETER volume request
+// @param p the AirPlay 2 Client Handle
+// @returns AIRPLAY_SEQ_CONTINUE if a 200 OK RTSP Response, AIRPLAY_SEQ_ABORT if not
+static enum airplay_seq_type response_handler_volume_start(struct airplaycl_s *p)
+{
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("SET_PARAMETER error. Response %d: %s", 
+			p->rtsp_response.status_code, p->rtsp_response.description);
+	
+		return AIRPLAY_SEQ_ABORT;
+	}
 
 	return AIRPLAY_SEQ_CONTINUE;
 }
@@ -2975,7 +3023,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		uint8_t sac[16];
 	} seed;
 	char sid[10+1], sci[16+1];
-	char *sac = NULL;
 	key_data_t kd[64];
 	struct {
 		uint16_t count, offset;
@@ -3233,40 +3280,36 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		goto erexit;
 	}
 
-
-	LOG_DEBUG( "[%p]:opened audio socket   l:%5d r:%d", p, p->rtp_ports.audio.lport, p->rtp_ports.audio.rport );
-	LOG_DEBUG( "[%p]:opened control socket l:%5d r:%d", p, p->rtp_ports.ctrl.lport, p->rtp_ports.ctrl.rport );
-	LOG_DEBUG( "[%p]:opened events socket l:%5d r:%d", p, p->rtp_ports.events.lport, p->rtp_ports.events.rport );
-
-	// if (!rtspcl_record(p->rtspcl, p->seq_number + 1, NTP2TS(airplaycl_get_ntp(NULL), p->sample_rate), kd)) goto erexit;
-
-	// if (kd_lookup(kd, "Audio-Latency")) {
-	// 	int latency = atoi(kd_lookup(kd, "Audio-Latency"));
-
-	// 	p->latency_frames = max((uint32_t) latency, p->latency_frames);
-	// }
-	// kd_free(kd);
-
 	pthread_mutex_lock(&p->mutex);
 	// as connect might take time, state might already have been set
 	if (p->raop_state == AIRPLAY_DOWN) p->raop_state = AIRPLAY_FLUSHED;
 	pthread_mutex_unlock(&p->mutex);
 
 	LOG_INFO("Implement volume setting exchange");
-	// if (set_volume) {
-	// 	LOG_INFO("[%p]: setting volume as part of connect %.2f", p, p->volume);
-	// 	airplaycl_set_volume(p, p->volume);
-	// }
-
-	if (sac) {
-		free(sac);
+	// RTSP SET_PARAMETER (volume)
+	if (payload_make_set_volume(p) == -1) {
+		LOG_ERROR("Error constructing RTSP SET_PARAMETER (volume) request");
+		goto erexit;
 	}
+	airplay_rtsp_request_log_debug(p);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	airplay_rtsp_response_log_debug(p);
+	p->next_seq = response_handler_volume_start(p);
+	LOG_DEBUG("Handled set_volume response");
+	airplay_rtsp_request_clean(p);
+	LOG_DEBUG("Request cleaned");
+	airplay_rtsp_response_clean(p);
+	LOG_DEBUG("Response cleaned");
+	airplay_session_status_log_info(p);
+	LOG_DEBUG("Status logged");
+	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
+		LOG_ERROR("Unsupported next sequence.");
+		goto erexit;
+	}
+	LOG_DEBUG("Returning true");
 	return true;
 
  erexit:
-	if (sac) {
-		free(sac);
-	}
 	kd_free(kd);
 	_airplaycl_disconnect(p, true);
 
@@ -3314,6 +3357,7 @@ bool airplaycl_destroy(struct airplaycl_s *p)
 
 	if (!p) return false;
 
+	airplay_events_deinit();
 	rc = airplaycl_disconnect(p);
 	rc &= rtspcl_destroy(p->rtspcl);
 	pthread_mutex_destroy(&p->mutex);

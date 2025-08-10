@@ -37,7 +37,7 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-#define DEFAULT_READ_TIMEOUT 3000	// milliseconds
+#define DEFAULT_READ_TIMEOUT 1500	// milliseconds
 
 typedef struct rtspcl_s {
     int fd;
@@ -1019,10 +1019,11 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	// memset(buf_plaintext, 0, RTSP_MAX_MESSAGE);
 	// len_plaintext = 0;
 
+	int read_timeout = rtspcld->read_timeout;
 	pfds.fd = rtspcld->fd;
 	pfds.events = POLLIN;
 	for (len_raw=0; len_raw < RTSP_MAX_MESSAGE; len_raw += rval) {
-		if (poll(&pfds, 1, rtspcld->read_timeout)) {
+		if (poll(&pfds, 1, read_timeout)) {
 			rval = recv(rtspcld->fd, buf_raw + len_raw, 1, 0);
 			if (rval == 0) {
 				if (len_raw == 0) {
@@ -1035,6 +1036,9 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 				LOG_ERROR("Unexpected error reading RTSP Response. %s", strerror(errno));
 				goto erexit;
 			}
+			// Lets try to speed up the read time by reducing timeout once data starts to flow.
+			// Since we are likely to be reading encrypted data, we don't know how much to expect to read.
+			read_timeout = max((int) (read_timeout / 4), 100);
 		}
 		else {
 			break;

@@ -37,52 +37,14 @@
 #include "airplay_events.h"
 #include "commands.h"
 #include "misc.h"
-// #include "logger.h"
 #include "cross_log.h"
-// #include "cross_net.h"
-// #include "misc.h"
-// #include "player.h"
+#include "player.h"
 #include "pair.h"
 
 #define RTSP_VERSION "RTSP/1.0"
 #define PACKAGE_NAME  "Default Package Name"
 
 
-/*---------- Copied from player.[c,h] to provide wrapper -----------------------------*/
-// See also the enum defined in cliraop.c and see if we can/should harmonise and/or integrate
-enum play_status {
-  PLAY_STOPPED = 2,
-  PLAY_PAUSED  = 3,
-  PLAY_PLAYING = 4,
-};
-
-enum repeat_mode {
-  REPEAT_OFF  = 0,
-  REPEAT_SONG = 1,
-  REPEAT_ALL  = 2,
-};
-
-struct player_status {
-  enum play_status status;
-  enum repeat_mode repeat;
-  char shuffle;
-  char consume;
-
-  int volume;
-
-  /* Playlist id */
-  uint32_t plid;
-  /* Id of the playing file/item in the files database */
-  uint32_t id;
-  /* Item-Id of the playing file/item in the queue */
-  uint32_t item_id;
-  /* Elapsed time in ms of playing item */
-  uint32_t pos_ms;
-  /* Length in ms of playing item */
-  uint32_t len_ms;
-};
-
-/*----------------------------------------*/
 
 enum airplay_events
 {
