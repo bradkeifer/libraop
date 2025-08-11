@@ -340,6 +340,7 @@ int main(int argc, char *argv[])
 	char glInterface[16] = "?";
 	static struct in_addr glHost;
 	char *client_name = NULL;
+	uint32_t KeepAlive = 0;
 
 	// parse arguments
 	for (i = 1; i < argc; i++)
@@ -608,7 +609,6 @@ int main(int argc, char *argv[])
 			status = PLAYING;
 
 			buf = malloc(DEFAULT_FRAMES_PER_CHUNK * 4);
-			uint32_t KeepAlive = 0;
 
 			// keep reading audio from stdin until exit/EOF
 			while (n || raopcl_is_playing(raopcl))
@@ -678,23 +678,76 @@ int main(int argc, char *argv[])
 			}
 			LOG_INFO("Connected to player: %s", player.udn ? player.udn : player.hostname);
 
-			// latency = raopcl_latency(raopcl);
+			latency = airplaycl_latency(airplaycl);
 
-			// LOG_INFO("connected to %s on port %d, player latency is %d ms", inet_ntoa(player.addr),
-			// 		player.port, (int)TS2MS(latency, raopcl_sample_rate(raopcl)));
+			LOG_INFO("connected to %s on port %d, player latency is %d ms", inet_ntoa(player.addr),
+					player.port, (int)TS2MS(latency, airplaycl_sample_rate(airplaycl)));
 
-			// if (start || wait)
-			// {
-			// 	uint64_t now = raopcl_get_ntp(NULL);
+			if (start || wait)
+			{
+				uint64_t now = airplaycl_get_ntp(NULL);
 
-			// 	start_at = (start ? start : now) + MS2NTP(wait) -
-			// 			TS2NTP(latency, raopcl_sample_rate(raopcl));
+				start_at = (start ? start : now) + MS2NTP(wait) -
+						TS2NTP(latency, airplaycl_sample_rate(airplaycl));
 
-			// 	LOG_INFO("now %u.%u, audio starts at NTP %u.%u (in %u ms)", RAOP_SECNTP(now), RAOP_SECNTP(start_at),
-			// 			(start_at + TS2NTP(latency, raopcl_sample_rate(raopcl)) > now) ? (uint32_t)NTP2MS(start_at - now + TS2NTP(latency, raopcl_sample_rate(raopcl))) : 0);
+				LOG_INFO("now %u.%u, audio starts at NTP %u.%u (in %u ms)", 
+					RAOP_SECNTP(now), RAOP_SECNTP(start_at),
+					(start_at + TS2NTP(latency, airplaycl_sample_rate(airplaycl)) > now) ? 
+					(uint32_t)NTP2MS(start_at - now + TS2NTP(latency, airplaycl_sample_rate(airplaycl))) : 
+					0);
 
-			// 	raopcl_start_at(raopcl, start_at);
-			// }
+				airplaycl_start_at(airplaycl, start_at);
+			}
+
+			// start the command/metadata reader thread
+			pthread_create(&glCmdPipeReaderThread, NULL, CmdPipeReaderThread, NULL);
+
+			start = airplaycl_get_ntp(NULL);
+			status = PLAYING;
+
+			buf = malloc(DEFAULT_FRAMES_PER_CHUNK * 4);
+
+			// keep reading audio from stdin until exit/EOF
+			while (n || airplaycl_is_playing(airplaycl))
+			{
+				uint64_t playtime, now;
+
+				if (status == STOPPED)
+					break;
+
+				now = airplaycl_get_ntp(NULL);
+
+				// execute every second
+				if (now - last > MS2NTP(1000))
+				{
+					last = now;
+					uint32_t elapsed = TS2MS(frames - airplaycl_latency(airplaycl), airplaycl_sample_rate(airplaycl));
+					if (frames && frames > airplaycl_latency(airplaycl))
+					{
+						LOG_INFO("elapsed milliseconds: %" PRIu64, elapsed);
+					}
+
+					// send keepalive when needed (to prevent stop playback on homepods)
+					if (!(KeepAlive++ & 0x0f))
+						airplaycl_keepalive(airplaycl);
+				}
+
+				// send chunk if needed
+				if (status == PLAYING && airplaycl_accept_frames(airplaycl))
+				{
+					n = read(infile, buf, DEFAULT_FRAMES_PER_CHUNK * 4);
+					if (!n)
+						continue;
+
+					airplaycl_send_chunk(airplaycl, buf, n / 4, &playtime);
+					frames += n / 4;
+				}
+				else
+				{
+					// prevent full cpu usage if we're waiting on data
+					usleep(1000);
+				}
+			}
 			break;
 		default:
 			LOG_ERROR("Invalid AirPlay version %d, must be 1 or 2", ap_version);

@@ -47,6 +47,7 @@
 #include "pair.h"
 #include "airplay_events.h"
 #include "misc.h"
+#include "rtp_common.h"
 
 // AirPlay2 - plist keys
 #define AIRPLAY_PLIST_FIRMWARE_VERSION				"firmwareRevision"
@@ -539,8 +540,8 @@ static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t
 static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_t key_len);
 static void chacha_close(gcry_cipher_hd_t hd);
 static gcry_cipher_hd_t chacha_open(const uint8_t *key, size_t key_len);
-// static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd);
-
+static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd);
+static int packet_encrypt(uint8_t **out, size_t *out_len, rtp_audio_pkt_t *pkt, size_t size, airplaycl_data_t *p);
 
 /*----------------------- ? ---------------------------------*/
 
@@ -2373,26 +2374,26 @@ error:
 	return NULL;
 }
 
-// static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd)
-// {
-// 	if (gcry_cipher_setiv(hd, nonce, nonce_len) != GPG_ERR_NO_ERROR) {
-// 		return -1;
-// 	}
+static int chacha_encrypt(uint8_t *cipher, uint8_t *plain, size_t plain_len, const void *ad, size_t ad_len, uint8_t *tag, size_t tag_len, uint8_t *nonce, size_t nonce_len, gcry_cipher_hd_t hd)
+{
+	if (gcry_cipher_setiv(hd, nonce, nonce_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
 
-// 	if (gcry_cipher_authenticate(hd, ad, ad_len) != GPG_ERR_NO_ERROR) {
-// 		return -1;
-// 	}
+	if (gcry_cipher_authenticate(hd, ad, ad_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
 
-// 	if (gcry_cipher_encrypt(hd, cipher, plain_len, plain, plain_len) != GPG_ERR_NO_ERROR) {
-// 		return -1;
-// 	}
+	if (gcry_cipher_encrypt(hd, cipher, plain_len, plain, plain_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
 
-// 	if (gcry_cipher_gettag(hd, tag, tag_len) != GPG_ERR_NO_ERROR) {
-// 		return -1;
-// 	}
+	if (gcry_cipher_gettag(hd, tag, tag_len) != GPG_ERR_NO_ERROR) {
+		return -1;
+	}
 
-// 	return 0;
-// }
+	return 0;
+}
 
 
 /*----------------------------------------------------------------------------*/
@@ -2520,36 +2521,93 @@ bool airplaycl_is_playing(struct airplaycl_s *p)
 
 // 	return size;
 // }
+/* -------------------- Creation and sending of RTP packets  ---------------- */
+
+// Encrypts an RTP Packet using the packet ciphering context
+// @param out a pointer to the commplete encrypted packet data
+// @param out_len the length of the complete encrypted packet data
+// @param pkt the RTP audio packet to be encrypted
+// @param size the size of the payload to be encrypted
+// @param p the AirPlay 2 Client Handle
+// @returns 0 on success, -1 on failure
+static int packet_encrypt(uint8_t **out, size_t *out_len, rtp_audio_pkt_t *pkt, size_t size, airplaycl_data_t *p)
+{
+	uint8_t authtag[16];
+	uint8_t nonce[12] = { 0 };
+	int nonce_offset = 4;
+	uint8_t *write_ptr;
+	int ret;
+
+	// Alloc so authtag and nonce can be appended
+	if (sizeof(rtp_audio_pkt_t) != 12) {
+		LOG_DEBUG("sizeof(rtp_audio_pkt_t) is not 12, it is %d", sizeof(rtp_audio_pkt_t));
+		return -1;
+	}
+	*out_len = sizeof(rtp_audio_pkt_t) + size + sizeof(authtag) + sizeof(nonce) - nonce_offset;
+	*out = malloc(*out_len);
+	write_ptr = *out;
+
+	// Using seqnum as nonce not very secure, but means that when we resend
+	// packets they will be identical to the original
+	memcpy(nonce + nonce_offset, &pkt->hdr.seq, sizeof(pkt->hdr.seq));
+
+	// The RTP header (including timestamp & ssrc) is not encrypted
+	memcpy(write_ptr, &pkt->hdr, sizeof(rtp_audio_pkt_t));
+	write_ptr = *out + sizeof(rtp_audio_pkt_t);
+
+	// Timestamp and SSRC are used as AAD = pkt->header + 4, len 8
+	ret = chacha_encrypt(write_ptr, (uint8_t *)(pkt + sizeof(rtp_audio_pkt_t)), size, &pkt->timestamp, 
+		sizeof(pkt->timestamp) + sizeof(pkt->ssrc), 
+		authtag, sizeof(authtag), 
+		nonce, sizeof(nonce), 
+		p->packet_cipher_hd);
+	if (ret < 0) {
+		free(*out);
+		return -1;
+	}
+
+	write_ptr += size;
+	memcpy(write_ptr, authtag, sizeof(authtag));
+	write_ptr += sizeof(authtag);
+	memcpy(write_ptr, nonce + nonce_offset, sizeof(nonce) - nonce_offset);
+
+	return 0;
+}
 
 /*----------------------------------------------------------------------------*/
-static int airplaycl_encrypt(airplaycl_data_t *airplaycld, uint8_t *data, int size)
-{
-	uint8_t *buf;
-	uint8_t nv[16];
-	int i=0,j;
-	memcpy(nv,airplaycld->iv,16);
-	while(i+16<=size){
-		buf=data+i;
-		for(j=0;j<16;j++) buf[j] ^= nv[j];
-		aes_encrypt(&airplaycld->ctx, buf, buf);
-		memcpy(nv,buf,16);
-		i+=16;
-	}
-#if 0
-	if(i<size){
-		uint8_t tmp[16];
-		LOG_INFO("[%p]: a block less than 16 bytes(%d) is not encrypted", airplaycld, size-i);
-		memset(tmp,0,16);
-		memcpy(tmp,data+i,size-i);
-		for(j=0;j<16;j++) tmp[j] ^= nv[j];
-		aes_encrypt(&airplaycld->ctx, tmp, tmp);
-		memcpy(nv,tmp,16);
-		memcpy(data+i,tmp,16);
-		i+=16;
-	}
-#endif
-	return i;
-}
+// Encrypts RTP data in accordance with the ciphering context (ctx)
+// @param airplaycld the AirPlay 2 Client Handle
+// @param data pointer to the data to be encrypted
+// @param size the number of bytes to be encrypted
+// @returns the number of bytes encrypted
+// static int airplaycl_encrypt(airplaycl_data_t *airplaycld, uint8_t *data, int size)
+// {
+// 	uint8_t *buf;
+// 	uint8_t nv[16];
+// 	int i=0,j;
+// 	memcpy(nv,airplaycld->iv,16);
+// 	while(i+16<=size){
+// 		buf=data+i;
+// 		for(j=0;j<16;j++) buf[j] ^= nv[j];
+// 		aes_encrypt(&airplaycld->ctx, buf, buf); // I suspect this should be changed to reflect the Packet Cipher Context
+// 		memcpy(nv,buf,16);
+// 		i+=16;
+// 	}
+// #if 0
+// 	if(i<size){
+// 		uint8_t tmp[16];
+// 		LOG_INFO("[%p]: a block less than 16 bytes(%d) is not encrypted", airplaycld, size-i);
+// 		memset(tmp,0,16);
+// 		memcpy(tmp,data+i,size-i);
+// 		for(j=0;j<16;j++) tmp[j] ^= nv[j];
+// 		aes_encrypt(&airplaycld->ctx, tmp, tmp);
+// 		memcpy(nv,tmp,16);
+// 		memcpy(data+i,tmp,16);
+// 		i+=16;
+// 	}
+// #endif
+// 	return i;
+// }
 
 /*----------------------------------------------------------------------------*/
 bool airplaycl_keepalive(struct airplaycl_s *p) {
@@ -2769,7 +2827,7 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	p->seq_number++;
 
 	// packet is after re-transmit header
-	packet = (rtp_audio_pkt_t *) (buffer + sizeof(rtp_header_t));
+	packet = (rtp_audio_pkt_t *) (buffer + sizeof(rtp_header_t)); // point packet to buffer + rtp_header
 	packet->hdr.proto = 0x80;
 	packet->hdr.type = 0x60 | (p->first_pkt ? 0x80 : 0);
 	p->first_pkt = false;
@@ -2778,10 +2836,32 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	packet->timestamp = htonl(p->head_ts);
 	packet->ssrc = htonl(p->ssrc);
 
-	memcpy((uint8_t*) packet + sizeof(rtp_audio_pkt_t), encoded, size);
+	memcpy((uint8_t*) packet + sizeof(rtp_audio_pkt_t), encoded, size); // append encoded to the packet
+	// So, now packet is the encoded RTP packet, including RTP Header (embedded in RTP Audio Packet)
+	// I think this means that packet has:
+	// rtp_header_t hdr
+	// uint32_t timestamp
+	// uint32_t ssrc
+	// uint8_t *data
 
-	// with newer airport express, don't use encryption (??)
-	if (p->encrypt) airplaycl_encrypt(p, (uint8_t*) packet + sizeof(rtp_audio_pkt_t), size);
+	// We need to encrypt with the packet cipher context, which also requires understanding the differences
+	// between the cliraop data structures for RTP packets and the owntones equivalent data structures so
+	// that we can either transform appropriately or modify the owntones encryption routines to work with the 
+	// cliraop data structures - latter approach probably simpler initially.
+	// if (p->encrypt) airplaycl_encrypt(p, (uint8_t*) packet + sizeof(rtp_audio_pkt_t), size);
+
+	// I think we should pass pointer to the start of packet to packet_encrypt, and not skip the
+	// rtp_header, timestamp and ssrc as airplaycl_encrypt does.
+	if (p->encrypt) {
+		size_t encrypted_len = 0;
+		uint8_t *encrypted_payload = (uint8_t *) NULL;
+		LOG_DEBUG("Encrypting RTP packet");
+		packet_encrypt(&encrypted_payload, &encrypted_len, packet, size, p);
+		LOG_DEBUG("Encrypted. Encrypted length = %d, plain length = %d", encrypted_len, size);
+	}
+	else {
+		LOG_DEBUG("No encryption of RTP packets");
+	}
 
 	n = p->seq_number % MAX_BACKLOG;
 	p->backlog[n].seq_number = p->seq_number;
@@ -2826,7 +2906,12 @@ bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int s
 	 uses airplaycld_accept_frames() and tries to send frames even before the
 	 connect has returned in case of multi-threaded application
 	*/
-	if (p->rtp_ports.audio.fd == -1 || p->raop_state != AIRPLAY_STREAMING) return false;
+	if (p->rtp_ports.audio.fd == -1 || p->raop_state != AIRPLAY_STREAMING) {
+		LOG_WARN("Streaming preconditons not met. "
+			"p->rtp_ports.audio.fd == %d || p->raop_state != %d",
+			p->rtp_ports.audio.fd, p->raop_state);
+		return false;
+	}
 
 	addr.sin_family = AF_INET;
 	addr.sin_addr = p->peer_addr;
