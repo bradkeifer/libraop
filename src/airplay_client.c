@@ -79,6 +79,7 @@
 #define AIRPLAY_COMMAND_SET_PARAMETER				"SET_PARAMETER"
 #define AIRPLAY_COMMAND_FLUSH						"FLUSH"
 #define AIRPLAY_COMMAND_TEARDOWN					"TEARDOWN"
+#define AIRPLAY_COMMAND_KEEPALIVE					"POST /feedback"
 
 // AirPlay 2 RTSP Headers
 #define AIRPLAY_RTSP_HEADER_HOMEKIT_PAIR			"X-Apple-HKP"
@@ -93,7 +94,7 @@
 #define AIRPLAY_NAME_SIZE 		64		// Max length of "name" key in plist info.
 
 // from owntones
-#define AIRPLAY_DUMP_TRAFFIC	1
+#define AIRPLAY_DUMP_TRAFFIC	0
 
 #define AIRPLAY_QUALITY_SAMPLE_RATE_DEFAULT     44100
 #define AIRPLAY_QUALITY_BITS_PER_SAMPLE_DEFAULT 16
@@ -898,7 +899,7 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
 	}
 
 	if (p->rtsp_request.headers.count == 0) {
-		LOG_WARN("RTSP Headers already clean");
+		LOG_SDEBUG("RTSP Headers already clean");
 		return true;
 	}
 
@@ -907,6 +908,11 @@ static bool airplay_rtsp_headers_clean(struct airplaycl_s *p) {
 		free(p->rtsp_request.headers.kd[i].data);
 	}
 	p->rtsp_request.headers.count = 0;
+
+	for (i=0; i < MAX_KD; i++) {
+		p->rtsp_request.headers.kd[i].key = NULL;
+		p->rtsp_request.headers.kd[i].data = NULL;
+	}
 
 	return true;
 }
@@ -1088,6 +1094,7 @@ static int rtsp_cipher(void *vp, uint8_t **buf_out, size_t *buf_out_len, uint8_t
 	if (encrypt) {
 #if AIRPLAY_DUMP_TRAFFIC
 		if (buf_in_len < 4096) {
+			LOG_DEBUG("Outgoing request length %d", buf_in_len);
 			hexdump("Encrypting outgoing request\n", buf_in, buf_in_len);
 		}
 		else {
@@ -2335,6 +2342,7 @@ static int session_cipher_setup(struct airplaycl_s *p, const uint8_t *key, size_
 	p->state = AIRPLAY_STATE_ENCRYPTED;
 	p->control_cipher_ctx = control_cipher_ctx;
 	p->packet_cipher_hd = packet_cipher_hd;
+	p->encrypt = true;
 
 	rtspcl_set_ciphercb(p->rtspcl, rtsp_cipher, p);
 	LOG_INFO("RTSP cipher callback has been set");
@@ -2489,38 +2497,14 @@ bool airplaycl_is_playing(struct airplaycl_s *p)
 
 	if (!p) return false;
 
-	if (p->pause_ts || now_ts < p->head_ts + airplaycl_latency(p)) return true;
-	else return false;
+	if (p->pause_ts || now_ts < p->head_ts + airplaycl_latency(p)) {
+		return true;
+	}
+	else {
+		return false;
+	}
 }
 
-/*----------------------------------------------------------------------------*/
-// static int rsa_encrypt(uint8_t *text, int len, uint8_t *res)
-// {
-// 	RSA *rsa;
-// 	uint8_t modules[256];
-// 	uint8_t exponent[8];
-// 	int size;
-// 	char n[] =
-// 			"59dE8qLieItsH1WgjrcFRKj6eUWqi+bGLOX1HL3U3GhC/j0Qg90u3sG/1CUtwC"
-// 			"5vOYvfDmFI6oSFXi5ELabWJmT2dKHzBJKa3k9ok+8t9ucRqMd6DZHJ2YCCLlDR"
-// 			"KSKv6kDqnw4UwPdpOMXziC/AMj3Z/lUVX1G7WSHCAWKf1zNS1eLvqr+boEjXuB"
-// 			"OitnZ/bDzPHrTOZz0Dew0uowxf/+sG+NCK3eQJVxqcaJ/vEHKIVd2M+5qL71yJ"
-// 			"Q+87X6oV3eaYvt3zWZYD6z5vYTcrtij2VZ9Zmni/UAaHqn9JdsBWLUEpVviYnh"
-// 			"imNVvYFZeCXg/IdTQ+x4IRdiXNv5hEew==";
-// 	char e[] = "AQAB";
-// 	BIGNUM *n_bn, *e_bn;
-
-// 	rsa = RSA_new();
-// 	size = base64_decode(n, modules);
-// 	n_bn = BN_bin2bn(modules, size, NULL);
-// 	size = base64_decode(e, exponent);
-// 	e_bn = BN_bin2bn(exponent, size, NULL);
-// 	RSA_set0_key(rsa, n_bn, e_bn, NULL);
-// 	size = RSA_public_encrypt(len, text, res, rsa, RSA_PKCS1_OAEP_PADDING);
-// 	RSA_free(rsa);
-
-// 	return size;
-// }
 /* -------------------- Creation and sending of RTP packets  ---------------- */
 
 // Encrypts an RTP Packet using the packet ciphering context
@@ -2555,7 +2539,7 @@ static int packet_encrypt(uint8_t **out, size_t *out_len, rtp_audio_pkt_t *pkt, 
 	memcpy(write_ptr, &pkt->hdr, sizeof(rtp_audio_pkt_t));
 	write_ptr = *out + sizeof(rtp_audio_pkt_t);
 
-	// Timestamp and SSRC are used as AAD = pkt->header + 4, len 8
+	// Timestamp and SSRC are used as AAD = pkt->header + 4 = pkt->timestamp, len 8 (timestamp + ssrc)
 	ret = chacha_encrypt(write_ptr, (uint8_t *)(pkt + sizeof(rtp_audio_pkt_t)), size, &pkt->timestamp, 
 		sizeof(pkt->timestamp) + sizeof(pkt->ssrc), 
 		authtag, sizeof(authtag), 
@@ -2611,7 +2595,36 @@ static int packet_encrypt(uint8_t **out, size_t *out_len, rtp_audio_pkt_t *pkt, 
 
 /*----------------------------------------------------------------------------*/
 bool airplaycl_keepalive(struct airplaycl_s *p) {
-	return rtspcl_options(p->rtspcl, NULL);
+
+	if (!p) {
+		LOG_ERROR("Invalid AirPlay 2 Client Handle");
+		return false;
+	}
+	pthread_mutex_lock(&p->mutex);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_command_add(p, AIRPLAY_COMMAND_KEEPALIVE);
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("Keepalive RTSP Request (%s) received Response %d %s",
+			p->rtsp_request.command, p->rtsp_response.status_code, p->rtsp_response.description);
+		goto error;
+	}
+	else {
+		LOG_DEBUG("Keepalive OK");
+	}
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	pthread_mutex_unlock(&p->mutex);
+
+	return true;
+
+error:
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+	pthread_mutex_unlock(&p->mutex);
+
+	return false;
+
 }
 
 /*----------------------------------------------------------------------------*/
@@ -2766,11 +2779,14 @@ bool airplaycl_accept_frames(struct airplaycl_s *p)
 /*----------------------------------------------------------------------------*/
 bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, uint64_t *playtime)
 {
-	uint8_t *encoded, *buffer;
+	uint8_t *encoded = (uint8_t *)NULL;
+	uint8_t *buffer = (uint8_t *)NULL;
 	rtp_audio_pkt_t *packet;
 	size_t n;
 	int size;
 	uint64_t now = airplaycl_get_ntp(NULL);
+	// static uint16_t initial_sequence = 0;
+	// uint16_t sequences = 0;
 
 	if (!p || !sample) {
 		LOG_ERROR("[%p]: something went wrong (s:%p)", p, sample);
@@ -2825,6 +2841,8 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	LOG_SDEBUG("[%p]: sending audio ts:%" PRIu64 " (pt:%u.%u now:%" PRIu64 ") ", p, p->head_ts, AIRPLAY_SEC(*playtime), AIRPLAY_FRAC(*playtime), airplaycl_get_ntp(NULL));
 
 	p->seq_number++;
+	// if (initial_sequence == 0) initial_sequence = p->seq_number;
+	// sequences = p->seq_number - initial_sequence;
 
 	// packet is after re-transmit header
 	packet = (rtp_audio_pkt_t *) (buffer + sizeof(rtp_header_t)); // point packet to buffer + rtp_header
@@ -2855,13 +2873,13 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	if (p->encrypt) {
 		size_t encrypted_len = 0;
 		uint8_t *encrypted_payload = (uint8_t *) NULL;
-		LOG_DEBUG("Encrypting RTP packet");
+		// LOG_DEBUG("Encrypting RTP packet. Sequences %" PRIu16, sequences);
 		packet_encrypt(&encrypted_payload, &encrypted_len, packet, size, p);
-		LOG_DEBUG("Encrypted. Encrypted length = %d, plain length = %d", encrypted_len, size);
+		// LOG_DEBUG("Encrypted. Encrypted length = %d, plain length = %d", encrypted_len, size);
 	}
-	else {
-		LOG_DEBUG("No encryption of RTP packets");
-	}
+	// else {
+	// 	LOG_DEBUG("Plain RTP packet. Sequences %" PRIu16, sequences);
+	// }
 
 	n = p->seq_number % MAX_BACKLOG;
 	p->backlog[n].seq_number = p->seq_number;
@@ -2908,8 +2926,8 @@ bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int s
 	*/
 	if (p->rtp_ports.audio.fd == -1 || p->raop_state != AIRPLAY_STREAMING) {
 		LOG_WARN("Streaming preconditons not met. "
-			"p->rtp_ports.audio.fd == %d || p->raop_state != %d",
-			p->rtp_ports.audio.fd, p->raop_state);
+			"p->rtp_ports.audio.fd == %d || p->raop_state != %d:%d",
+			p->rtp_ports.audio.fd, AIRPLAY_STREAMING, p->raop_state);
 		return false;
 	}
 
@@ -2937,9 +2955,10 @@ bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int s
 	if (FD_ISSET(p->rtp_ports.audio.fd, &wfds)) {
 		n = sendto(p->rtp_ports.audio.fd, (void*) packet, + size, 0, (void*) &addr, sizeof(addr));
 		if (n != size) {
-			LOG_DEBUG("[%p]: error sending audio packet", p);
+			LOG_DEBUG("[%p]: error %d sending audio packet of size %u. %s", p, n, + size, strerror(errno));
 			ret = false;
 			p->sane.audio.send++;
+			abort();
 		}
 		else p->sane.audio.send = 0;
 		p->sane.audio.avail = 0;
@@ -3069,19 +3088,40 @@ static void _airplaycl_terminate_rtp(struct airplaycl_s *p)
 /*----------------------------------------------------------------------------*/
 bool airplaycl_set_volume(struct airplaycl_s *p, float vol)
 {
-	char a[128];
+	enum airplay_seq_type seq;
 
 	if (!p) return false;
 
 	if ((vol < -30 || vol > 0) && vol != -144.0) return false;
 
+	pthread_mutex_lock(&p->mutex);
+
 	p->volume = vol;
 
 	if (!p->rtspcl || p->raop_state < AIRPLAY_FLUSHED) return true;
 
-	sprintf(a, "volume: %f\r\n", vol);
+	if (payload_make_set_volume(p) == -1) {
+		LOG_ERROR("Error constructing RTSP SET_PARAMETER (volume) request");
+		return false;
+	}
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	seq = response_handler_volume_start(p);
+	if (p->rtsp_response.status_code != RTSP_OK) {
+		LOG_ERROR("Set Volume RTSP Request (%s) received Response %d %s",
+			p->rtsp_request.command, p->rtsp_response.status_code, p->rtsp_response.description);
+	}
+	else {
+		LOG_DEBUG("Set Volume OK");
+	}
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
 
-	return rtspcl_set_parameter(p->rtspcl, a);
+	pthread_mutex_unlock(&p->mutex);
+
+	if (seq == AIRPLAY_SEQ_CONTINUE) return true;
+
+	return false;
+
 }
 
 /*----------------------------------------------------------------------------*/
@@ -3205,12 +3245,10 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Unable to start RTSP session with %s", p->name);
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 	p->next_seq = response_handler_info_start(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
-	airplay_session_status_log_debug(p);
 
 	if (p->next_seq == AIRPLAY_SEQ_ABORT) {
 		LOG_ERROR("Unable to obtain information from the AirPlay 2 device to connect");
@@ -3251,14 +3289,12 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 			LOG_ERROR("Error constructing the RTSP pairing request");
 			goto erexit;
 		}
-		airplay_rtsp_request_log_debug(p);
 		rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 
 		// Now handle the response and free the response memory
 		p->next_seq = response_handler_pair_setup1(p);
 		airplay_rtsp_request_clean(p);
 		airplay_rtsp_response_clean(p);
-		airplay_session_status_log_debug(p);
 		
 		if (p->pair_type == PAIR_CLIENT_HOMEKIT_TRANSIENT &&
 			p->state == AIRPLAY_STATE_AUTH &&
@@ -3269,14 +3305,12 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 				LOG_ERROR("Error constructing the RTSP pairing request 2");
 				goto erexit;
 			}
-			airplay_rtsp_request_log_debug(p);
 			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 
 			// Now handle the response and free the response memory
 			p->next_seq = response_handler_pair_setup2(p);
 			airplay_rtsp_request_clean(p);
 			airplay_rtsp_response_clean(p);
-			airplay_session_status_log_debug(p);
 		}
 		else if (p->pair_type == PAIR_CLIENT_HOMEKIT_NORMAL &&
 				 p->state == AIRPLAY_STATE_AUTH &&
@@ -3286,7 +3320,6 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 				LOG_ERROR("Error constructing RTSP /pair-pin-start");
 				goto erexit;
 			}
-			airplay_rtsp_request_log_debug(p);
 			rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
 
 			p->next_seq = response_handler_pin_start(p);
@@ -3306,9 +3339,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Error constructing RTSP SETUP (session)");
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_setup_session(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
@@ -3339,9 +3370,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Error constructing RTSP %s", AIRPLAY_COMMAND_SETPEERS);
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_setpeers(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
@@ -3365,9 +3394,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Error constructing RTSP SETUP (session)");
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_setup_stream(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
@@ -3406,9 +3433,7 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Error constructing RTSP RECORD");
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_record(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
@@ -3428,13 +3453,11 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 		LOG_ERROR("Error constructing RTSP SET_PARAMETER (volume) request");
 		goto erexit;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_volume_start(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
-	airplay_session_status_log_info(p);
+	airplay_session_status_log_debug(p);
 	if (p->next_seq != AIRPLAY_SEQ_CONTINUE) {
 		LOG_ERROR("Unsupported next sequence.");
 		goto erexit;
@@ -3447,6 +3470,44 @@ bool airplaycl_connect(struct airplaycl_s *p, struct in_addr peer, uint16_t dest
 	_airplaycl_disconnect(p, true);
 
 	return false;
+}
+
+/*----------------------------------------------------------------------------*/
+bool airplaycl_flush(struct airplaycl_s *p)
+{
+	bool rc;
+	uint16_t seq_number;
+	uint32_t timestamp;
+
+	if (!p || p->raop_state != AIRPLAY_STREAMING) return false;
+
+	pthread_mutex_lock(&p->mutex);
+	p->raop_state = AIRPLAY_FLUSHING;
+	p->retransmit = 0;
+	seq_number = p->seq_number;
+	timestamp = p->head_ts;
+	pthread_mutex_unlock(&p->mutex);
+
+	LOG_INFO("[%p]: flushing up to s:%u ts:%" PRIu64 "", p, seq_number, timestamp);
+
+	// everything BELOW these values should be FLUSHED ==> the +1 is mandatory
+	// We can't do this from airplay, because we are encrypted!!
+	// rc = rtspcl_flush(p->rtspcl, seq_number + 1, timestamp + 1);
+	// RTSP FLUSH
+	if (payload_make_flush(p) == -1) {
+		LOG_ERROR("Error constructing RTSP FLUSH request");
+		goto skip_flush;
+	}
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	p->next_seq = response_handler_flush(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+skip_flush:
+	pthread_mutex_lock(&p->mutex);
+	p->raop_state = AIRPLAY_FLUSHED;
+	pthread_mutex_unlock(&p->mutex);
+
+	return rc;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -3467,13 +3528,10 @@ bool _airplaycl_disconnect(struct airplaycl_s *p, bool force)
 		LOG_ERROR("Error constructing RTSP FLUSH request");
 		goto skip_flush;
 	}
-	airplay_rtsp_request_log_debug(p);
 	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
-	airplay_rtsp_response_log_debug(p);
 	p->next_seq = response_handler_flush(p);
 	airplay_rtsp_request_clean(p);
 	airplay_rtsp_response_clean(p);
-	airplay_session_status_log_info(p);
 
 skip_flush:
 	// RTSP TEARDOWN
@@ -3508,6 +3566,40 @@ skip_teardown:
 bool airplaycl_disconnect(struct airplaycl_s *p)
 {
 	return _airplaycl_disconnect(p, false);
+}
+
+/*----------------------------------------------------------------------------*/
+bool airplaycl_repair(struct airplaycl_s *p, bool set_volume)
+{
+	bool rc = true;
+
+	if (!p) return false;
+
+	pthread_mutex_lock(&p->mutex);
+	p->raop_state = AIRPLAY_DOWN;
+	pthread_mutex_unlock(&p->mutex);
+
+	_airplaycl_terminate_rtp(p);
+
+	// not thread safe, but does not matter really, all we want is "some" flush
+	// rc &= rtspcl_flush(p->rtspcl, p->seq_number + 1, p->head_ts + 1);
+	// RTSP FLUSH
+	if (payload_make_flush(p) == -1) {
+		LOG_ERROR("Error constructing RTSP FLUSH request");
+		goto skip_flush;
+	}
+	rtspcl_process_request(p->rtspcl, &p->rtsp_request, &p->rtsp_response);
+	response_handler_flush(p);
+	airplay_rtsp_request_clean(p);
+	airplay_rtsp_response_clean(p);
+skip_flush:
+	rc &= rtspcl_disconnect(p->rtspcl);
+	rc &= rtspcl_remove_all_exthds(p->rtspcl);
+
+	// this will put us again in FLUSHED state
+	rc &= airplaycl_connect(p, p->peer_addr, p->rtsp_port, set_volume);
+
+	return rc;
 }
 
 /*----------------------------------------------------------------------------*/

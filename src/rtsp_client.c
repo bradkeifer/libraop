@@ -38,6 +38,7 @@
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
 #define DEFAULT_READ_TIMEOUT 1500	// milliseconds
+#define MIN_READ_TIMEOUT 500 // milliseconds
 
 typedef struct rtspcl_s {
     int fd;
@@ -968,14 +969,13 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 	len = strlen((char *)buf_plaintext);
 	len_plaintext = len;
 
-	if (content_type && content) {
+	if (content_type && content && length) {
 		len_plaintext = len + length;
 		memcpy(buf_plaintext + len, content, length);
 	}
 
-#if AIRPLAY_DUMP_TRAFFIC
-	hexdump("RTSP Request - Plaintext\n", buf_plaintext, len_plaintext);
-#endif
+	// if (*loglevel >= lDEBUG) hexdump("RTSP Request - Plaintext\n", buf_plaintext, len_plaintext);
+
 	if (rtspcld->cipher_enabled) {
 		// NOTE: Must free(buf_raw) pre-decryption, because callback allocates the required memory
 		free(buf_raw);
@@ -991,10 +991,8 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		memcpy(buf_raw, buf_plaintext, len_plaintext);
 		len_raw = len_plaintext;
 	}
-	LOG_DEBUG("Sending %zu bytes of %s data", len_raw, rtspcld->cipher_enabled ? "encrypted" : "plain text");
-#if AIRPLAY_DUMP_TRAFFIC
-	hexdump("RTSP Request - Raw\n", buf_raw, len_raw);
-#endif
+	// LOG_DEBUG("Sending %zu bytes of %s data", len_raw, rtspcld->cipher_enabled ? "encrypted" : "plain text");
+	// if (*loglevel >= lDEBUG) hexdump("RTSP Request - Raw\n", buf_raw, len_raw);
 	rval = send(rtspcld->fd, buf_raw, len_raw, 0);
 	if (rval != len_raw) {
 	   LOG_ERROR( "[%p]: couldn't write request (%d!=%d)", rtspcld, rval, len_raw);
@@ -1037,7 +1035,7 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 			}
 			// Lets try to speed up the read time by reducing timeout once data starts to flow.
 			// Since we are likely to be reading encrypted data, we don't know how much to expect to read.
-			read_timeout = max((int) (read_timeout / 4), 100);
+			read_timeout = max((int) (read_timeout / 4), MIN_READ_TIMEOUT);
 		}
 		else {
 			break;
@@ -1048,14 +1046,17 @@ static bool exec_request_buf(struct rtspcl_s *rtspcld, char *cmd, char *content_
 		goto erexit;
 	}
 
-#if AIRPLAY_DUMP_TRAFFIC
-	hexdump("RTSP Response\n", buf_raw, len_raw);
-#endif
+	// if (*loglevel >= lDEBUG) hexdump("RTSP Response\n", buf_raw, len_raw);
 
-if (rtspcld->cipher_enabled) {
+	if (rtspcld->cipher_enabled) {
 		// NOTE: Must free(buf_plaintext) pre-decryption, because callback allocates the required memory
 		free(buf_plaintext);
 		rtspcld->ciphercb(rtspcld->ciphercb_arg, &buf_plaintext, &len_plaintext, buf_raw, len_raw, 0);
+		if (len_plaintext == 0) {
+			LOG_ERROR("Unable to decrypt response");
+			hexdump("Raw Response\n", buf_raw, len_raw);
+			goto erexit;
+		}
 		cipher_ratio = (float)len_raw/(float)len_plaintext;
 		if (cipher_ratio > CIPHER_RATIO) {
 			LOG_ERROR("Actual Cipher Ratio (%0.2f) exceeds assumed (%0.2f)", cipher_ratio, CIPHER_RATIO);
@@ -1231,7 +1232,7 @@ bool rtspcl_process_request(struct rtspcl_s *p, rtsp_request_t *request, rtsp_re
 	LOG_DEBUG("request->command: %s", request->command);
 	LOG_DEBUG("request->content-type: %s", request->content_type);
 	LOG_DEBUG("request->body.length: %d", request->body.length);
-	if (*loglevel >- lDEBUG) hexdump("Body\n", (uint8_t *)request->body.mem, request->body.length);
+	// if (*loglevel >- lDEBUG) hexdump("Body\n", (uint8_t *)request->body.mem, request->body.length);
 	if (!exec_request_buf(p, request->command, request->content_type, request->body.mem, request->body.length,
 		1, request->headers.kd, rkd, (char **) &resp_content, &resp_len, NULL)) {
 		LOG_ERROR("exec request failed. Response length =%d", resp_len);

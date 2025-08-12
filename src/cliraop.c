@@ -61,6 +61,7 @@ char cmdPipeBuf[512];
 int latency = MS2TS(1000, 44100);
 struct raopcl_s *raopcl;
 struct airplaycl_s *airplaycl;
+int ap_version = 1;
 
 enum
 {
@@ -254,7 +255,10 @@ static void *CmdPipeReaderThread(void *args)
 				else if (strcmp(key, "VOLUME") == 0)
 				{
 					LOG_INFO("Setting volume to: %s", value);
-					raopcl_set_volume(raopcl, raopcl_float_volume(atoi(value)));
+					if (ap_version == 1)
+						raopcl_set_volume(raopcl, raopcl_float_volume(atoi(value)));
+					else if (ap_version == 2)
+						airplaycl_set_volume(airplaycl, airplaycl_float_volume(atoi(value)));
 				}
 				else if (strcmp(key, "ACTION") == 0 && strcmp(value, "PAUSE") == 0)
 				{
@@ -272,11 +276,20 @@ static void *CmdPipeReaderThread(void *args)
 				}
 				else if (strcmp(key, "ACTION") == 0 && strcmp(value, "PLAY") == 0)
 				{
-					uint64_t now = raopcl_get_ntp(NULL);
-					uint64_t start_at = now + MS2NTP(200) - TS2NTP(latency, raopcl_sample_rate(raopcl));
-					status = PLAYING;
-					raopcl_start_at(raopcl, start_at);
-					LOG_INFO("Re-started at : %u.%u", RAOP_SECNTP(start_at));
+					if (ap_version == 1) {
+						uint64_t now = raopcl_get_ntp(NULL);
+						uint64_t start_at = now + MS2NTP(200) - TS2NTP(latency, raopcl_sample_rate(raopcl));
+						status = PLAYING;
+						raopcl_start_at(raopcl, start_at);
+						LOG_INFO("Re-started at : %u.%u", RAOP_SECNTP(start_at));
+					}
+					else if (ap_version == 2) {
+						uint64_t now = airplaycl_get_ntp(NULL);
+						uint64_t start_at = now + MS2NTP(200) - TS2NTP(latency, airplaycl_sample_rate(airplaycl));
+						status = PLAYING;
+						airplaycl_start_at(airplaycl, start_at);
+						LOG_INFO("Re-started at : %u.%u", RAOP_SECNTP(start_at));
+					}
 				}
 				else if (strcmp(key, "ACTION") == 0 && strcmp(value, "STOP") == 0)
 				{
@@ -316,7 +329,7 @@ int main(int argc, char *argv[])
 	char *glDACPid = "1A2B3D4EA1B2C3D4";
 	char *activeRemote = "ap5918800d";
 	char *fname = NULL;
-	int volume = 0, wait = 0, ap_version = 1;;
+	int volume = 0, wait = 0;
 	struct
 	{
 		struct hostent *hostent;
