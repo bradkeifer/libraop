@@ -37,13 +37,8 @@
 #define SECRET_KEY_SIZE 32
 #define PRIVATE_KEY_SIZE 64
 #define SIGNATURE_SIZE	64
-<<<<<<< HEAD
 #define DEFAULT_READ_TIMEOUT 1500	// milliseconds
 #define MIN_READ_TIMEOUT 500 // milliseconds
-=======
-#define DEFAULT_READ_TIMEOUT 500	// milliseconds
-#define DEFAULT_READ_RETRIES 5
->>>>>>> parent of 1bd677c (Remove read_retries. Fix segmentation fault)
 
 typedef struct rtspcl_s {
     int fd;
