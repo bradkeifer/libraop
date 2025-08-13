@@ -149,7 +149,6 @@ bool rtspcl_connect(struct rtspcl_s *p, struct in_addr local, struct in_addr hos
 	sprintf(p->url,"rtsp://%s/%s", inet_ntoa(host), sid);
 
 	p->read_timeout = DEFAULT_READ_TIMEOUT;	// todo - make this a configurable variable
-	p->read_retries = DEFAULT_READ_RETRIES; // todo - as per above
 
 	return true;
 }
