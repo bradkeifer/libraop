@@ -264,10 +264,18 @@ static void *CmdPipeReaderThread(void *args)
 				{
 					if (status == PLAYING)
 					{
-						raopcl_pause(raopcl);
-						raopcl_flush(raopcl);
-						status = PAUSED;
-						LOG_INFO("Pause at : %u.%u", RAOP_SECNTP(raopcl_get_ntp(NULL)));
+						if (ap_version == 1) {
+							raopcl_pause(raopcl);
+							raopcl_flush(raopcl);
+							status = PAUSED;
+							LOG_INFO("Pause at : %u.%u", RAOP_SECNTP(raopcl_get_ntp(NULL)));
+						}
+						else if (ap_version == 2) {
+								airplaycl_pause(airplaycl);
+								airplaycl_flush(airplaycl);
+								status = PAUSED;
+								LOG_INFO("Pause at : %u.%u", RAOP_SECNTP(airplaycl_get_ntp(NULL)));
+						}
 					}
 					else
 					{
