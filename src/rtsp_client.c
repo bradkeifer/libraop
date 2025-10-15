@@ -66,11 +66,8 @@ typedef struct rtspcl_s {
 
 } rtspcl_t;
 
-// extern log_level 	raop_loglevel;
-// static log_level	*loglevel = &raop_loglevel;
-
-extern log_level 	main_log;
-static log_level 	*loglevel = &main_log;
+extern log_level 	raop_loglevel;
+static log_level	*loglevel = &raop_loglevel;
 
 static bool exec_request(rtspcl_t *rtspcld, char *cmd, char *content_type,
 			 char *content, int length, int get_response, key_data_t *hds,
@@ -642,9 +639,9 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	struct pollfd pfds;
 	key_data_t lkd[MAX_KD], *pkd;
 
-	rtspcld->rtsp_response = false;
-	rtspcld->status_code = 0;
-	rtspcld->description[0] = 0;
+	// rtspcld->rtsp_response = false;
+	// rtspcld->status_code = 0;
+	// rtspcld->description[0] = 0;
 
 	if (!rtspcld || rtspcld->fd == -1) return false;
 
@@ -734,11 +731,11 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 	}
 
 	token = strtok(line, delimiters);
-	LOG_DEBUG("token should be RTSP/1.0: %s", token);
-	if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
-		rtspcld->rtsp_response = true;
-		LOG_DEBUG("Valid RTSP/1.0 Response");
-	}
+	// LOG_DEBUG("token should be RTSP/1.0: %s", token);
+	// if (!strncmp(token, "RTSP/1.0", strlen("RTSP/1.0"))) {
+	// 	rtspcld->rtsp_response = true;
+	// 	LOG_DEBUG("Valid RTSP/1.0 Response");
+	// }
 	token = strtok(NULL, delimiters);
 
 	if (token == NULL || strcmp(token, "200")) {
@@ -756,12 +753,12 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 		}
 	} else {
 		LOG_DEBUG("[%p]: <------ : %s: request ok", rtspcld, token);
-		rtspcld->status_code = (int)strtol(token, NULL, 10);
-		while ((token = strtok(NULL, delimiters))) {
-			if ((strlen(rtspcld->description) + 
-				strlen(token) < sizeof(rtspcld->description)))
-			strcat(rtspcld->description, token);
-		}
+		// rtspcld->status_code = (int)strtol(token, NULL, 10);
+		// while ((token = strtok(NULL, delimiters))) {
+		// 	if ((strlen(rtspcld->description) + 
+		// 		strlen(token) < sizeof(rtspcld->description)))
+		// 	strcat(rtspcld->description, token);
+		// }
 	}
 
 	i = 0;
@@ -813,15 +810,14 @@ static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type
 			LOG_ERROR("[%p]: content length receive error %p %d", rtspcld, data, size);
 		}
 
+		LOG_INFO("[%p]: Body data len %d", rtspcld, clen, data);
 		if (*loglevel >= lDEBUG) logdump(data, clen);
 
 		if (resp_content) {
 			*resp_content = data;
 			if (resp_len) *resp_len = clen;
 		} 
-		else {
-			free(data);
-		}
+		else free(data);
 	}
 
 	pkd[i].key = NULL;

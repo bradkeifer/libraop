@@ -461,8 +461,7 @@ typedef struct airplaycl_s {
 } airplaycl_data_t;
 
 extern log_level	airplay_loglevel;
-extern log_level 	main_log;
-static log_level 	*loglevel = &main_log;
+static log_level 	*loglevel = &airplay_loglevel;
 
 /*----------------------- Generic Helpers ---------------------------------*/
 
@@ -1015,7 +1014,9 @@ static void airplay_rtsp_response_log_debug(struct airplaycl_s *p){
 	LOG_DEBUG("Content Type: %s", p->rtsp_response.content_type);
 	LOG_DEBUG("RTSP Body length: %d", p->rtsp_response.length);
 	if (p->rtsp_response.length) {
-		hexdump("Body\n", (uint8_t *)p->rtsp_response.content, p->rtsp_response.length);
+		if (*loglevel >= lDEBUG) {
+			hexdump("Body\n", (uint8_t *)p->rtsp_response.content, p->rtsp_response.length);
+		}
 	}
 }
 
@@ -2533,13 +2534,19 @@ static int packet_encrypt(uint8_t **out, size_t *out_len, rtp_audio_pkt_t *pkt, 
 
 	// Using seqnum as nonce not very secure, but means that when we resend
 	// packets they will be identical to the original
+	LOG_DEBUG("Nonce construction: pkt->hdr.seq[0]=0x%x, seq[1]=%x, sizeof(pkt->hdr.seq)=%d",
+		pkt->hdr.seq[0], pkt->hdr.seq[1], sizeof(pkt->hdr.seq));
 	memcpy(nonce + nonce_offset, &pkt->hdr.seq, sizeof(pkt->hdr.seq));
+	if (*loglevel >= lDEBUG) {
+		hexdump("Nonce:", (uint8_t *)nonce, sizeof(nonce));
+	}
 
 	// The RTP header (including timestamp & ssrc) is not encrypted
 	memcpy(write_ptr, &pkt->hdr, sizeof(rtp_audio_pkt_t));
 	write_ptr = *out + sizeof(rtp_audio_pkt_t);
 
 	// Timestamp and SSRC are used as AAD = pkt->header + 4 = pkt->timestamp, len 8 (timestamp + ssrc)
+	LOG_DEBUG("chacha_encrypt:pkt(%p), AAD(%p), size=%d", pkt, &pkt->timestamp, sizeof(pkt->timestamp) + sizeof(pkt->ssrc));
 	ret = chacha_encrypt(write_ptr, (uint8_t *)(pkt + sizeof(rtp_audio_pkt_t)), size, &pkt->timestamp, 
 		sizeof(pkt->timestamp) + sizeof(pkt->ssrc), 
 		authtag, sizeof(authtag), 
@@ -2810,6 +2817,8 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 	switch (p->codec) {
 		case AIRPLAY_ALAC:
 			pcm_to_alac(p->alac_codec, sample, frames, &encoded, &size);
+			LOG_DEBUG("ALAC encoded PCM sample of %d frames to ALAC frame size of %d",
+				frames, size);
 			break;
 		case AIRPLAY_ALAC_RAW:
 			pcm_to_alac_raw(sample, frames, &encoded, &size, p->chunk_len);
@@ -2874,7 +2883,16 @@ bool airplaycl_send_chunk(struct airplaycl_s *p, uint8_t *sample, int frames, ui
 		size_t encrypted_len = 0;
 		uint8_t *encrypted_payload = (uint8_t *) NULL;
 		// LOG_DEBUG("Encrypting RTP packet. Sequences %" PRIu16, sequences);
+		if (*loglevel >= lDEBUG) {
+			hexdump("RTP packet header pre-encryption\n", (uint8_t *)&packet->hdr, sizeof(packet->hdr));
+			hexdump("RTP Audio Packet timestamp\n", (uint8_t *)&packet->timestamp, sizeof(packet->timestamp));
+			hexdump("RTP Audio Packet ssrc\n", (uint8_t *)&packet->ssrc, sizeof(packet->ssrc));
+			hexdump("RTP packet pre-encryption\n", (uint8_t *)packet, size);
+		}
 		packet_encrypt(&encrypted_payload, &encrypted_len, packet, size, p);
+		if (*loglevel >= lDEBUG) {
+			hexdump("Encrypted payload\n", encrypted_payload, encrypted_len);
+		}
 		// LOG_DEBUG("Encrypted. Encrypted length = %d, plain length = %d", encrypted_len, size);
 	}
 	// else {
@@ -2960,7 +2978,12 @@ bool _airplaycl_send_audio(struct airplaycl_s *p, rtp_audio_pkt_t *packet, int s
 			p->sane.audio.send++;
 			abort();
 		}
-		else p->sane.audio.send = 0;
+		else {
+			if (*loglevel >= lDEBUG) {
+				hexdump("Sent\n", (uint8_t *)packet, + size );
+			}
+			p->sane.audio.send = 0;
+		}
 		p->sane.audio.avail = 0;
 	}
 	else {

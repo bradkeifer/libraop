@@ -87,13 +87,13 @@ struct debug_s
 } debug[] = {
 	{lSILENCE, lSILENCE, lSILENCE, lSILENCE},
 	{lERROR, lERROR, lERROR, lERROR},
-	{lINFO, lERROR, lINFO, lERROR},
+	{lINFO, lERROR, lERROR, lERROR},
 	{lINFO, lINFO, lINFO, lERROR},
-	{lDEBUG, lERROR, lDEBUG, lERROR},
-	{lDEBUG, lINFO, lDEBUG, lERROR},
+	{lDEBUG, lERROR, lERROR, lERROR},
+	{lDEBUG, lINFO, lINFO, lERROR},
 	{lDEBUG, lDEBUG, lDEBUG, lERROR},
-	{lSDEBUG, lINFO, lSDEBUG, lERROR},
-	{lSDEBUG, lDEBUG, lSDEBUG, lERROR},
+	{lSDEBUG, lINFO, lINFO, lERROR},
+	{lSDEBUG, lDEBUG, lDEBUG, lERROR},
 	{lSDEBUG, lSDEBUG, lSDEBUG, lERROR},
 };
 
@@ -499,6 +499,7 @@ int main(int argc, char *argv[])
 
 	util_loglevel = debug[level].util;
 	raop_loglevel = debug[level].raop;
+	airplay_loglevel = debug[level].airplay;
 	main_log = debug[level].main;
 
 	LOG_DEBUG("Using AirPlay version %d", ap_version);
